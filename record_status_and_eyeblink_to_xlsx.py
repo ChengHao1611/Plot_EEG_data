@@ -127,7 +127,8 @@ def check_status_253(edf_path, tolerance=0.05):
         end = start + sample_rate
         segment = status_signal[start:end]
         for i in range(len(segment)):
-            if segment[i] > 0:
+            #print(segment[i])
+            if segment[i] > 1:
                 if stage == 1:
                     sec_251 = sec + 0.002 * i
                     stage = 2
@@ -165,5 +166,5 @@ def check_status_253(edf_path, tolerance=0.05):
 
 if __name__ == "__main__":
     # 請將此路徑改為你的EDF檔案路徑
-    edf_file = "E:\專題\data\s01_061102n.set\s01_061102n.EDF"
+    edf_file = "E:\專題\data\s09_060313n.set\s09_060313n.EDF"
     check_status_253(edf_file)
