@@ -7,7 +7,7 @@ from pandas import DataFrame
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft JhengHei"]  # 設定中文字體
 matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
 
-data_column_name = ["秒數", "事件反應時間", "α波時間", "導回車道用時", "睡著"]
+data_column_name = ["秒數", "事件反應時間", "α波時間", "導回車道用時", "睡著", "眼動次數"]
 
 def plot_line_data(df: DataFrame, column_name: str) -> tuple[Figure, Axes]:
     """

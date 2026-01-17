@@ -21,6 +21,7 @@ def process_data(df: DataFrame) -> DataFrame:
     data["α波時間"] = pd.to_numeric(data["α波時間"], errors="coerce")
     data["導回車道用時"] = pd.to_numeric(data["導回車道用時"], errors="coerce")
     data["睡著"] = pd.to_numeric(data["睡著"], errors="coerce")
+    data["眼動次數"] = pd.to_numeric(data["眼動次數"], errors="coerce")
     
     # 將 NaN 值替換為 0
     data = data.fillna(0)
@@ -33,7 +34,7 @@ def input_picture_format(df: DataFrame):
     """
     print("請輸入要產生的模式: 1. 合併圖表 2. 單獨圖表 3. 三張圖疊加")
     mode = int(input("請輸入數字："))
-    print("請輸入要產生哪些圖表：1. 事件反應時間 2. α波時間 3. 導回車道用時 4. 睡著")
+    print("請輸入要產生哪些圖表：1. 事件反應時間 2. α波時間 3. 導回車道用時 4. 睡著, 5. 眼動次數")
     if mode == 1:
         chart1 = int(input("請輸入第一個圖表的數字："))
         if chart1 != 4:
@@ -95,7 +96,7 @@ def input_picture_format(df: DataFrame):
 
 if __name__ == "__main__":
     excel_file = input("請輸入 Excel 檔案路徑: ")
-    #excel_file = "E:\專題\data\s02_050921m.set\s02_050921m.xlsx" 
+    #excel_file = "E:\專題\data\s09_060317n.set\s09_060317n.xlsx" 
     
     try:
         df = pd.read_excel(excel_file)
