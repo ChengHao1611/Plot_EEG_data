@@ -97,6 +97,7 @@ def input_picture_format(df: DataFrame):
 if __name__ == "__main__":
     excel_file = input("請輸入 Excel 檔案路徑: ")
     #excel_file = "E:\專題\data\s09_060317n.set\s09_060317n.xlsx" 
+    excel_file = excel_file.replace('"', '')
     
     try:
         df = pd.read_excel(excel_file)
