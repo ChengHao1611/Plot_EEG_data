@@ -84,7 +84,7 @@ def plot_sleep_area(df: DataFrame, color="blueviolet") -> tuple[Figure, Axes]:
 
     ax.set_xlabel("秒數", fontsize=12)
     ax.set_ylabel("睡著狀態", fontsize=12)
-    ax.set_title("睡著區域標記", fontsize=14, fontweight="bold")
+    ax.set_title("睡著區域(N1)標記", fontsize=14, fontweight="bold")
     # ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
 
@@ -102,7 +102,7 @@ def plot_sleep_area_on_ax(ax: Axes, df: DataFrame, color="blueviolet", alpha: fl
             start = df_sorted["秒數"].iloc[i]
         elif val == 2 and start is not None:
             end = df_sorted["秒數"].iloc[i]
-            ax.axvspan(start, end, color=color, alpha=alpha, label="睡著區域" if not label_added else None)
+            ax.axvspan(start, end, color=color, alpha=alpha, label="睡著區域(N1)" if not label_added else None)
             label_added = True
             start = None
 
