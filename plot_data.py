@@ -9,6 +9,31 @@ matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
 
 data_column_name = ["秒數", "事件反應時間", "α波時間", "導回車道用時", "睡著", "眼動次數"]
 
+def align_yaxis(ax: Axes, df: DataFrame, column_name: str):
+    """
+    確保 Y 軸的 0 位準與範圍邏輯統一
+    """
+    c_min = df[column_name].min()
+    c_max = df[column_name].max()
+    
+    # 處理全為 NaN 或數據為空的情況
+    if pd.isna(c_min) or pd.isna(c_max):
+        return
+
+    if c_min >= 0:
+        ax_bottom = 0
+        ax_top = c_max * 1.1 if c_max > 0 else 1
+    elif c_max <= 0:
+        ax_bottom = c_min * 1.1
+        ax_top = 0
+    else:
+        # 正負值都有時，強制 0 置中
+        max_abs = max(abs(c_min), abs(c_max))
+        ax_bottom = -max_abs * 1.1
+        ax_top = max_abs * 1.1
+    
+    ax.set_ylim(bottom=ax_bottom, top=ax_top)
+
 def plot_line_data(df: DataFrame, column_name: str) -> tuple[Figure, Axes]:
     """
     繪製折線圖
@@ -190,6 +215,7 @@ def plot_data_triple(df: DataFrame,
     """
     # 主圖 (第一張)
     fig, ax1 = check_ouput_picture(df, data_column_name[chart1], mode1)
+    align_yaxis(ax1, df, data_column_name[chart1])
 
     # 第二張：建立右側 y 軸
     ax2 = ax1.twinx()
@@ -202,7 +228,8 @@ def plot_data_triple(df: DataFrame,
         ax2.plot(df["秒數"], df[column_name2],
                  color="salmon", marker="o", markersize=4,
                  linewidth=2, label=column_name2)
-    ax2.set_ylabel(column_name2, fontsize=12, color="salmon")
+    align_yaxis(ax2, df, column_name2)
+    ax2.set_ylabel(column_name2, fontsize=12, color="salmon", alpha=0.1)
     ax2.tick_params(axis="y", labelcolor="salmon")
 
     # 第三張：再建立一個共享 X 軸的 overlay
