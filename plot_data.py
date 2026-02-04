@@ -227,7 +227,7 @@ def plot_data_triple(df: DataFrame,
     else:
         ax2.plot(df["秒數"], df[column_name2],
                  color="salmon", marker="o", markersize=4,
-                 linewidth=2, label=column_name2)
+                 linewidth=2, alpha=0.5, label=column_name2)
     align_yaxis(ax2, df, column_name2)
     ax2.set_ylabel(column_name2, fontsize=12, color="salmon", alpha=0.1)
     ax2.tick_params(axis="y", labelcolor="salmon")
