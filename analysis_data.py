@@ -28,12 +28,16 @@ def process_data(df: DataFrame) -> DataFrame:
     return data
 
 
-def input_picture_format(df: DataFrame):
+def input_picture_format(df: DataFrame) -> str:
     """
     輸入要產生的模式和圖表，並產生圖表
     """
-    print("請輸入要產生的模式: 1. 合併圖表 2. 單獨圖表 3. 三張圖疊加")
+    print("請輸入要產生的模式: 1. 合併圖表 2. 單獨圖表 3. 三張圖疊加 4. 選擇新的資料")
     mode = int(input("請輸入數字："))
+
+    if mode == 4:
+        return "exit";
+
     print("請輸入要產生哪些圖表：1. 事件反應時間 2. α波時間 3. 導回車道用時 4. 睡著, 5. 眼動次數")
     if mode == 1:
         chart1 = int(input("請輸入第一個圖表的數字："))
@@ -92,17 +96,19 @@ def input_picture_format(df: DataFrame):
         plot_data_triple(df, chart1, mode1, chart2, mode2, chart3, mode3)
     else:
         print("輸入錯誤")
+    return "continue";
 
 
 if __name__ == "__main__":
-    excel_file = input("請輸入 Excel 檔案路徑: ")
-    #excel_file = "E:\專題\data\s09_060317n.set\s09_060317n.xlsx" 
-    excel_file = excel_file.replace('"', '')
     
     try:
-        df = pd.read_excel(excel_file)
-        df = process_data(df)
-        while(1): input_picture_format(df)
+        while(1):
+            excel_file = input("請輸入 Excel 檔案路徑: ")
+            excel_file = excel_file.replace('"', '')
+            df = pd.read_excel(excel_file)
+            df = process_data(df)
+            while(1): 
+                if input_picture_format(df) == "exit": break;
         exit()
         
     except Exception as e:
