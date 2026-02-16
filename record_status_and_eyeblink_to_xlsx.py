@@ -166,5 +166,6 @@ def check_status_253(edf_path, tolerance=0.05):
 
 if __name__ == "__main__":
     # 請將此路徑改為你的EDF檔案路徑
-    edf_file = "E:\專題\data\s09_060313n.set\s09_060313n.EDF"
-    check_status_253(edf_file)
+    excel_file = input("請輸入 Excel 檔案路徑: ")
+    excel_file = excel_file.replace('"', '') 
+    check_status_253(excel_file)
