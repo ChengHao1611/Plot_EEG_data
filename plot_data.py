@@ -34,16 +34,16 @@ def align_yaxis(ax: Axes, df: DataFrame, column_name: str):
     
     ax.set_ylim(bottom=ax_bottom, top=ax_top)
 
-def plot_line_data(df: DataFrame, column_name: str) -> tuple[Figure, Axes]:
+def plot_line_data(df: DataFrame, column_name: str, color: str = "blueviolet") -> tuple[Figure, Axes]:
     """
     繪製折線圖
     """
     #filtered_df = df[df[column_name].notna() & (df[column_name] != 0)]
     fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df["秒數"], df[column_name], color="blueviolet", marker="o", markersize=4, linewidth=2, label=column_name)
+    ax.plot(df["秒數"], df[column_name], color=color, marker="o", markersize=4, linewidth=2, label=column_name)
     ax.set_xlabel("秒數", fontsize=12)
-    ax.set_ylabel(column_name, fontsize=12, color="blueviolet")
-    ax.tick_params(axis="y", labelcolor="blueviolet")
+    ax.set_ylabel(column_name, fontsize=12, color=color)
+    ax.tick_params(axis="y", labelcolor=color)
     ax.grid(True, alpha=0.3)
     ax.set_title(column_name + "分析", fontsize=14, fontweight="bold")
     ax.legend(loc="upper left")
@@ -71,17 +71,17 @@ def plot_line_data(df: DataFrame, column_name: str) -> tuple[Figure, Axes]:
         ax.set_ylim(top=ax_top)
     return fig, ax
 
-def plot_bar_data(df: DataFrame, column_name: str) -> tuple[Figure, Axes]:
+def plot_bar_data(df: DataFrame, column_name: str, color: str = "blueviolet") -> tuple[Figure, Axes]:
     """
         繪製長條圖
     """
     fig, ax = plt.subplots(figsize=(12, 6))
     
     ax.bar(df["秒數"], df[column_name], 
-                  width=1, alpha=0.6, color="blueviolet", label=column_name)
+                  width=1, alpha=0.6, color=color, label=column_name)
     ax.set_xlabel("秒數", fontsize=12)
-    ax.set_ylabel(column_name, fontsize=12, color="blueviolet")
-    ax.tick_params(axis="y", labelcolor="blueviolet")
+    ax.set_ylabel(column_name, fontsize=12, color=color)
+    ax.tick_params(axis="y", labelcolor=color)
     ax.grid(True, alpha=0.3)
     ax.set_title(column_name + "分析", fontsize=14, fontweight="bold")
     ax.legend(loc="upper left")
@@ -209,12 +209,15 @@ def plot_data_combined(fig1: Figure, ax1: Axes, chart1: int, mode1: int,
 def plot_data_triple(df: DataFrame,
                      chart1: int, mode1: int,
                      chart2: int, mode2: int,
-                     chart3: int, mode3: int):
+                     chart3: int, mode3: int,
+                     color1: str = "blueviolet",
+                     color2: str = "salmon",
+                     color3: str = "green"):
     """
     三張圖疊加：以最長的 X 軸為基準，第三張不顯示 Y 軸
     """
     # 主圖 (第一張)
-    fig, ax1 = check_ouput_picture(df, data_column_name[chart1], mode1)
+    fig, ax1 = check_ouput_picture(df, data_column_name[chart1], mode1, color1)
     align_yaxis(ax1, df, data_column_name[chart1])
 
     # 第二張：建立右側 y 軸
@@ -223,14 +226,14 @@ def plot_data_triple(df: DataFrame,
     #filtered_df2 = df[(df[column_name2].notna()) & (df[column_name2] != 0)]
     if mode2 == 2:
         ax2.bar(df["秒數"], df[column_name2],
-                width=0.8, alpha=0.6, color="salmon", label=column_name2)
+                width=0.8, alpha=0.6, color=color2, label=column_name2)
     else:
         ax2.plot(df["秒數"], df[column_name2],
-                 color="salmon", marker="o", markersize=4,
+                 color=color2, marker="o", markersize=4,
                  linewidth=2, alpha=0.5, label=column_name2)
     align_yaxis(ax2, df, column_name2)
-    ax2.set_ylabel(column_name2, fontsize=12, color="salmon", alpha=0.1)
-    ax2.tick_params(axis="y", labelcolor="salmon")
+    ax2.set_ylabel(column_name2, fontsize=12, color=color2, alpha=0.1)
+    ax2.tick_params(axis="y", labelcolor=color2)
 
     # 第三張：再建立一個共享 X 軸的 overlay
     ax3 = ax1.twinx()
@@ -238,13 +241,13 @@ def plot_data_triple(df: DataFrame,
     filtered_df3 = df[(df[column_name3].notna()) & (df[column_name3] != 0)]
     if mode3 == 2:
         ax3.bar(filtered_df3["秒數"], filtered_df3[column_name3],
-                width=0.8, alpha=0.4, color="green", label=column_name3)
+                width=0.8, alpha=0.4, color=color3, label=column_name3)
     elif mode3 == None:
-        plot_sleep_area_on_ax(ax3, df, color="green", alpha=0.3)
+        plot_sleep_area_on_ax(ax3, df, color=color3, alpha=0.3)
         column_name3 = "睡著"
     else:
         ax3.plot(filtered_df3["秒數"], filtered_df3[column_name3],
-                 color="green", marker="x", markersize=4,
+                 color=color3, marker="x", markersize=4,
                  linewidth=2, label=column_name3)
 
     # 隱藏第三張的 Y 軸
@@ -268,8 +271,8 @@ def plot_data_triple(df: DataFrame,
     fig.show()
     return fig, ax1
 
-def check_ouput_picture(df: DataFrame, column_name: str, mode: int) -> tuple[Figure, Axes]:
+def check_ouput_picture(df: DataFrame, column_name: str, mode: int, color: str = "blueviolet") -> tuple[Figure, Axes]:
     if mode == 1:
-        return plot_line_data(df, column_name)
+        return plot_line_data(df, column_name, color)
     elif mode == 2:
-        return plot_bar_data(df, column_name)
+        return plot_bar_data(df, column_name, color)
