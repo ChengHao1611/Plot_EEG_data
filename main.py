@@ -1,3 +1,4 @@
+import os
 from tkinter import Tk, filedialog, messagebox, ttk, StringVar, IntVar, W, E, N, S, LEFT
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -6,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 from pandas import DataFrame
 from plot_data import *
+from record_status_and_eyeblink_to_xlsx import check_status_253
 
 matplotlib.rcParams["font.sans-serif"] = ["Microsoft JhengHei"]  # 設定中文字體
 matplotlib.rcParams["axes.unicode_minus"] = False  # 解決負號顯示問題
@@ -35,6 +37,7 @@ class AnalysisDataGUI:
         
         self.df = None
         self.file_path = None
+        self.edf_path = None
         
         # 圖表選項（排除「睡著」，因為第三個圖表固定為睡著）
         self.chart_options = ["事件反應時間", "α波時間", "導回車道用時", "眼動次數"]
@@ -85,6 +88,19 @@ class AnalysisDataGUI:
         
         # 初始化圖表選擇區域（固定為兩個圖表選擇）
         self.setup_chart_selection_ui()
+
+        # Status + 眼動 轉 Excel 區域
+        self.setup_record_status_ui(main_frame)
+
+    def setup_record_status_ui(self, parent):
+        record_frame = ttk.LabelFrame(parent, text="Status + 眼動 轉 Excel", padding="10")
+        record_frame.grid(row=3, column=0, columnspan=2, sticky=(W, E), pady=5)
+
+        self.edf_label = ttk.Label(record_frame, text="尚未選擇 EDF 檔案")
+        self.edf_label.grid(row=0, column=0, sticky=W, padx=5)
+
+        ttk.Button(record_frame, text="選擇 EDF 檔案", command=self.select_edf_file).grid(row=0, column=1, padx=5)
+        ttk.Button(record_frame, text="開始轉檔", command=self.generate_status_xlsx).grid(row=0, column=2, padx=5)
     
     def select_file(self):
         file_path = filedialog.askopenfilename(
@@ -104,6 +120,28 @@ class AnalysisDataGUI:
                 self.df = None
                 self.file_path = None
                 self.file_label.config(text="尚未選擇檔案")
+
+    def select_edf_file(self):
+        edf_path = filedialog.askopenfilename(
+            title="選擇 EDF 檔案",
+            filetypes=[("EDF 檔案", "*.edf *.EDF"), ("所有檔案", "*.*")]
+        )
+
+        if edf_path:
+            self.edf_path = edf_path
+            self.edf_label.config(text=f"已選擇: {os.path.basename(edf_path)}")
+
+    def generate_status_xlsx(self):
+        if not self.edf_path:
+            messagebox.showwarning("警告", "請先選擇 EDF 檔案！")
+            return
+
+        try:
+            check_status_253(self.edf_path)
+            output_path = os.path.splitext(self.edf_path)[0] + ".xlsx"
+            messagebox.showinfo("完成", f"已產生: {output_path}")
+        except Exception as e:
+            messagebox.showerror("錯誤", f"轉檔時發生錯誤：{str(e)}")
     
     def setup_chart_selection_ui(self):
         """設置圖表選擇界面（只選擇兩個圖表，第三個固定為睡著）"""
