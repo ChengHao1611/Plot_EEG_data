@@ -1,7 +1,7 @@
 import argparse
 import csv
 import os
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pyedflib
@@ -71,7 +71,7 @@ def compute_band_powers_and_ratios_fft(
     alpha_high: float,
     beta_low: float,
     beta_high: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
         return empty, empty, empty, empty, empty
@@ -135,6 +135,113 @@ def compute_band_powers_and_ratios_fft(
     return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total
 
 
+def extract_react_times(edf_path: str) -> Dict[int, float]:
+    """
+    使用 stage 1->2 的規則，react_time = sec_253 - sec_251。
+    t = sec，sec 為 1-based 秒數。
+    回傳 {second_key: react_time}，second_key = round(sec_251 * 10) 的整數 (1 位小數)。
+    """
+    f = pyedflib.EdfReader(edf_path)
+    try:
+        labels = f.getSignalLabels()
+        status_idx = find_channel_index(labels, "status")
+        if status_idx is None:
+            raise ValueError("Status channel not found in EDF.")
+
+        status_signal = f.readSignal(status_idx)
+        fs = float(f.getSampleFrequency(status_idx))
+        if fs <= 0:
+            raise ValueError("Invalid sample rate.")
+
+        total_samples = len(status_signal)
+        total_seconds = int(total_samples // fs)
+
+        stage = 1
+        sec_251 = None
+        events: Dict[int, float] = {}
+
+        for sec in range(1, total_seconds + 1):
+            start = int((sec - 1) * fs)
+            end = int(sec * fs)
+            segment = status_signal[start:end]
+
+            for i in range(len(segment)):
+                if segment[i] > 1:
+                    t = float(sec)
+                    if stage == 1:
+                        sec_251 = t + 0.002 * i
+                        stage = 2
+                    elif stage == 2:
+                        sec_253 = t + 0.002 * i
+                        stage = 3
+                    elif stage == 3:
+                        if sec_251 is not None and sec_253 is not None:
+                            sec_251_round = int(round(sec_251, 0))
+                            react_time = round(sec_253 - sec_251, 1)
+                            key = int(round(sec_251_round * 10))
+                            print(sec_251, sec_251_round,key, react_time)
+                            if key not in events:
+                                events[key] = react_time
+                        stage = 1
+    finally:
+        f.close()
+
+    return events
+
+
+def merge_react_time_into_csv(csv_path: str, events: Dict[int, float]) -> None:
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        rows = list(reader)
+
+    if "second" not in fieldnames:
+        raise ValueError("CSV must contain 'second' column.")
+
+    if "react_time" not in fieldnames:
+        fieldnames.append("react_time")
+
+    def second_to_key(val: str) -> int | None:
+        try:
+            return int(round(float(val) * 10))
+        except Exception:
+            return None
+
+    existing_keys = set()
+    for row in rows:
+        key = second_to_key(row.get("second", ""))
+        if key is None:
+            continue
+        existing_keys.add(key)
+        if key in events:
+            row["react_time"] = f"{events[key]:.1f}"
+
+    for key, react_time in events.items():
+        if key in existing_keys:
+            continue
+        sec_value = key / 10.0
+        new_row = {name: "" for name in fieldnames}
+        new_row["second"] = f"{sec_value}"
+        new_row["react_time"] = f"{react_time:.1f}"
+        rows.append(new_row)
+
+    def sort_key(row: Dict[str, str]) -> float:
+        try:
+            return float(row.get("second", ""))
+        except Exception:
+            return float("inf")
+
+    rows.sort(key=sort_key)
+
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -177,7 +284,6 @@ def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, f
             ]
         )
         writer.writerows(rows)
-
 
 def main() -> int:
     args = parse_args()
@@ -252,6 +358,13 @@ def main() -> int:
 
     if args.save_csv:
         save_csv(args.save_csv, csv_rows)
+
+        if len(edf_files) == 1:
+            events = extract_react_times(edf_files[0])
+            merge_react_time_into_csv(args.save_csv, events)
+        else:
+            print("Multiple EDF files provided. Skipping react_time merge.")
+
         print(f"Saved per-second values to: {args.save_csv}")
 
     return 0
