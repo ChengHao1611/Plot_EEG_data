@@ -6,6 +6,22 @@ from typing import List, Tuple
 import numpy as np
 import pyedflib
 
+def load_eyeblinkning(data_path: str) -> List[int]:
+    if not os.path.exists(data_path):
+        print(f"Warning: arousal data file not found: {data_path}")
+        return []
+    try:
+        with open(data_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return []
+            parts = content.split(",")
+            blinks_seconds = [int(float(p)) for p in parts[1:]]  # Skip the first part (count)
+            return blinks_seconds
+    except Exception as e:
+        print(f"Error reading arousal data from {data_path}: {e}")
+        return []
+
 def find_channel_index(labels: List[str], target: str) -> int | None:
     target_lower = target.lower()
     for i, label in enumerate(labels):
@@ -143,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, float, float]]) -> None:
+def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, float, float, int]]) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -156,7 +172,8 @@ def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, f
                 "beta_power",
                 "alpha_beta",
                 "alpha_theta",
-                "alpha_total"
+                "alpha_total",
+                "eyeblinking_count"
             ]
         )
         writer.writerows(rows)
@@ -176,9 +193,11 @@ def main() -> int:
     total_secs = 0
     total_valid = 0
     total_skipped = 0
-    csv_rows: List[Tuple[str, int, float, float, float, float, float, float]] = []
+    csv_rows: List[Tuple[str, int, float, float, float, float, float, float, int]] = []
 
     for path in edf_files:
+        dat_path = path.replace(".edf", "_arousal info.dat")
+        blink_seconds = load_eyeblinkning(dat_path)
         signal, fs = load_channel_signal(path, args.channel)
         theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total = compute_band_powers_and_ratios_fft(
             signal,
@@ -207,13 +226,23 @@ def main() -> int:
 
         if args.save_csv:
             for sec_idx in range(n_secs):
+                t = sec_idx + 1
+                start_range = max(0, t - 30)
+                count = sum(1 for blink in blink_seconds if start_range <= blink <= t)
                 t_val = float(theta_power[sec_idx]) if not np.isnan(theta_power[sec_idx]) else float("nan")
                 a_val = float(alpha_power[sec_idx]) if not np.isnan(alpha_power[sec_idx]) else float("nan")
                 b_val = float(beta_power[sec_idx]) if not np.isnan(beta_power[sec_idx]) else float("nan")
                 ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
                 at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
                 atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
-                csv_rows.append((os.path.basename(path), sec_idx + 1, t_val, a_val, b_val, ab_val, at_val, atotal_val))
+
+                csv_rows.append((
+                    os.path.basename(path),
+                    t,
+                    t_val, a_val, b_val,
+                    ab_val, at_val, atotal_val,
+                    count
+                ))
 
     print("--- Summary ---")
     print(f"Files processed: {len(edf_files)}")
