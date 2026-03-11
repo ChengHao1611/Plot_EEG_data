@@ -1,0 +1,44 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+
+def plot_eeg_data(csv_file):
+    df = pd.read_csv(csv_file)
+    eeg_file = df['file'].iloc[0]
+    fig, ax1 = plt.subplots(figsize=(14, 7))
+
+    events = df[df['react_time'] > 0]
+
+    shaded_label_added = False
+    for _, row in events.iterrows():
+        start_t = row['second']
+        duration = row['react_time']
+        end_t = start_t + duration
+
+        label = 'Event' if not shaded_label_added else ""
+        ax1.axvspan(start_t, end_t, color='yellow', alpha=0.3, label=label, zorder = 1)
+        shaded_label_added = True
+
+    line1, = ax1.plot(df['second'], df['alpha_beta'], label='α/β Ratio', color='blue', alpha=0.7, zorder = 3)
+    line2, = ax1.plot(df['second'], df['alpha_theta'], label='α/θ Ratio', color='green', alpha=0.7, zorder = 3)
+
+    ax1.set_xlabel('Time(s)')
+    ax1.set_ylabel('Ratio', color='black')
+    ax1.tick_params(axis='y', labelcolor='black')
+    ax1.grid(True, which='both', linestyle='--', linewidth=0.5, zorder = 0)
+
+    ax2 = ax1.twinx()
+    line3, = ax2.plot(df['second'], df['eyeblinking_count'], label='Eyeblink Count (per 30s)', 
+                      color='red', linewidth=2, linestyle='-', zorder = 4)
+    ax2.set_ylabel('Eyeblink Count (per 30s)', color='red')
+    ax2.tick_params(axis='y', labelcolor='red')
+
+    lines = [line1, line2, line3]
+    labels = [line.get_label() for line in lines]
+    ax1.legend(lines, labels, loc='upper right')
+    plt.title(eeg_file)
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    csv_file = r"result.csv"
+    plot_eeg_data(csv_file)
