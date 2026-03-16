@@ -1,10 +1,10 @@
 import argparse
-import csv
 import os
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pyedflib
+from openpyxl import Workbook, load_workbook
 
 def load_eyeblinkning(data_path: str) -> List[int]:
     if not os.path.exists(data_path):
@@ -176,22 +176,31 @@ def extract_react_times(edf_path: str) -> Dict[int, float]:
     return events
 
 
-def merge_react_time_into_csv(csv_path: str, events: Dict[int, float]) -> None:
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
+def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None:
+    if not os.path.exists(xlsx_path):
+        raise FileNotFoundError(f"XLSX not found: {xlsx_path}")
 
-    with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rows = list(reader)
+    wb = load_workbook(xlsx_path)
+    ws = wb.active
+    fieldnames = [
+        cell.value for cell in ws[1]
+        if cell.value is not None
+    ]
 
     if "second" not in fieldnames:
-        raise ValueError("CSV must contain 'second' column.")
+        raise ValueError("XLSX must contain 'second' column.")
 
     if "react_time" not in fieldnames:
         fieldnames.append("react_time")
 
-    def second_to_key(val: str) -> int | None:
+    rows: List[Dict[str, float | int | str | None]] = []
+    for row_idx in range(2, ws.max_row + 1):
+        row: Dict[str, float | int | str | None] = {}
+        for col_idx, name in enumerate(fieldnames, start=1):
+            row[name] = ws.cell(row=row_idx, column=col_idx).value
+        rows.append(row)
+
+    def second_to_key(val: float | int | str | None) -> int | None:
         try:
             return int(round(float(val) * 10))
         except Exception:
@@ -199,23 +208,23 @@ def merge_react_time_into_csv(csv_path: str, events: Dict[int, float]) -> None:
 
     existing_keys = set()
     for row in rows:
-        key = second_to_key(row.get("second", ""))
+        key = second_to_key(row.get("second"))
         if key is None:
             continue
         existing_keys.add(key)
         if key in events:
-            row["react_time"] = f"{events[key]:.1f}"
+            row["react_time"] = round(events[key], 1)
 
     for key, react_time in events.items():
         if key in existing_keys:
             continue
         sec_value = key / 10.0
-        new_row = {name: "" for name in fieldnames}
-        new_row["second"] = f"{sec_value}"
-        new_row["react_time"] = f"{react_time:.1f}"
+        new_row = {name: None for name in fieldnames}
+        new_row["second"] = sec_value
+        new_row["react_time"] = round(react_time, 1)
         rows.append(new_row)
 
-    def sort_key(row: Dict[str, str]) -> float:
+    def sort_key(row: Dict[str, float | int | str | None]) -> float:
         try:
             return float(row.get("second", ""))
         except Exception:
@@ -223,10 +232,12 @@ def merge_react_time_into_csv(csv_path: str, events: Dict[int, float]) -> None:
 
     rows.sort(key=sort_key)
 
-    with open(csv_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    ws.delete_rows(1, ws.max_row)
+    ws.append(fieldnames)
+    for row in rows:
+        ws.append([row.get(name) for name in fieldnames])
+
+    wb.save(xlsx_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -248,29 +259,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beta-low", type=float, default=12.0, help="Beta band low cutoff (Hz)")
     parser.add_argument("--beta-high", type=float, default=30.0, help="Beta band high cutoff (Hz)")
 
-    parser.add_argument("--save-csv", default=None, help="Optional CSV output path")
+    parser.add_argument(
+        "--save-xlsx",
+        "--save-csv",
+        dest="save_xlsx",
+        default=None,
+        help="Optional XLSX output path",
+    )
 
     return parser.parse_args()
 
 
-def save_csv(output_path: str, rows: List[Tuple[int, float, float, float, float, float, float, int]]) -> None:
+def normalize_xlsx_path(output_path: str) -> str:
+    root, ext = os.path.splitext(output_path)
+    if ext.lower() == ".xlsx":
+        return output_path
+    return root + ".xlsx" if ext else output_path + ".xlsx"
+
+
+def save_xlsx(output_path: str, rows: List[Tuple[int, float, float, float, float, float, float, int]]) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "second",
-                "theta_power",
-                "alpha_power",
-                "beta_power",
-                "alpha_beta",
-                "alpha_theta",
-                "alpha_total",
-                "eyeblinking_count",
-                "react_time"
-            ]
-        )
-        writer.writerows(rows)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "result"
+    ws.append(
+        [
+            "second",
+            "theta_power",
+            "alpha_power",
+            "beta_power",
+            "alpha_beta",
+            "alpha_theta",
+            "alpha_total",
+            "eyeblinking_count",
+            "react_time",
+        ]
+    )
+
+    for row in rows:
+        ws.append(list(row) + [None])
+
+    wb.save(output_path)
 
 def main() -> int:
     args = parse_args()
@@ -282,7 +311,7 @@ def main() -> int:
     total_secs = 0
     total_valid = 0
     total_skipped = 0
-    csv_rows: List[Tuple[int, float, float, float, float, float, float, int]] = []
+    output_rows: List[Tuple[int, float, float, float, float, float, float, int]] = []
     dat_root, _ = os.path.splitext(edf_path)
     dat_path = dat_root + "_arousal info.dat"
     blink_seconds = load_eyeblinkning(dat_path)
@@ -312,7 +341,7 @@ def main() -> int:
         f"valid={valid_secs}, skipped={skipped}"
     )
 
-    if args.save_csv:
+    if args.save_xlsx:
         for sec_idx in range(n_secs):
             t = sec_idx + 1
             start_range = max(0, t - 30)
@@ -324,7 +353,7 @@ def main() -> int:
             at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
             atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
 
-            csv_rows.append((
+            output_rows.append((
                 t,
                 t_val, a_val, b_val,
                 ab_val, at_val, atotal_val,
@@ -337,12 +366,13 @@ def main() -> int:
     print(f"Valid seconds: {total_valid}")
     print(f"Skipped seconds (invalid): {total_skipped}")
 
-    if args.save_csv:
-        save_csv(args.save_csv, csv_rows)
+    if args.save_xlsx:
+        output_path = normalize_xlsx_path(args.save_xlsx)
+        save_xlsx(output_path, output_rows)
         events = extract_react_times(edf_path)
-        merge_react_time_into_csv(args.save_csv, events)
+        merge_react_time_into_xlsx(output_path, events)
 
-        print(f"Saved per-second values to: {args.save_csv}")
+        print(f"Saved per-second values to: {output_path}")
 
     return 0
 
