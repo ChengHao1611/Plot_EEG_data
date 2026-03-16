@@ -5,6 +5,9 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pyedflib
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font
+
+RED_FONT = Font(color="FFFF0000")
 
 def load_eyeblinkning(data_path: str) -> List[int]:
     if not os.path.exists(data_path):
@@ -176,6 +179,23 @@ def extract_react_times(edf_path: str) -> Dict[int, float]:
     return events
 
 
+def apply_ratio_highlights(ws, fieldnames: List[str]) -> None:
+    highlight_columns = [
+        fieldnames.index(name) + 1
+        for name in ("alpha_beta", "alpha_theta")
+        if name in fieldnames
+    ]
+
+    for row_idx in range(2, ws.max_row + 1):
+        for col_idx in highlight_columns:
+            cell = ws.cell(row=row_idx, column=col_idx)
+            try:
+                if float(cell.value) > 1.0:
+                    cell.font = RED_FONT
+            except (TypeError, ValueError):
+                continue
+
+
 def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None:
     if not os.path.exists(xlsx_path):
         raise FileNotFoundError(f"XLSX not found: {xlsx_path}")
@@ -236,6 +256,7 @@ def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None
     ws.append(fieldnames)
     for row in rows:
         ws.append([row.get(name) for name in fieldnames])
+    apply_ratio_highlights(ws, fieldnames)
 
     wb.save(xlsx_path)
 
@@ -298,6 +319,20 @@ def save_xlsx(output_path: str, rows: List[Tuple[int, float, float, float, float
 
     for row in rows:
         ws.append(list(row) + [None])
+    apply_ratio_highlights(
+        ws,
+        [
+            "second",
+            "theta_power",
+            "alpha_power",
+            "beta_power",
+            "alpha_beta",
+            "alpha_theta",
+            "alpha_total",
+            "eyeblinking_count",
+            "react_time",
+        ],
+    )
 
     wb.save(output_path)
 
