@@ -29,19 +29,6 @@ def find_channel_index(labels: List[str], target: str) -> int | None:
             return i
     return None
 
-def list_edf_files(input_dir: str) -> List[str]:
-    if not os.path.isdir(input_dir):
-        raise NotADirectoryError(f"Not a directory: {input_dir}")
-
-    files: List[str] = []
-    for name in os.listdir(input_dir):
-        if name.lower().endswith(".edf"):
-            files.append(os.path.join(input_dir, name))
-
-    files.sort()
-    return files
-
-
 def load_channel_signal(edf_path: str, channel_name: str) -> Tuple[np.ndarray, float]:
     if not os.path.exists(edf_path):
         raise FileNotFoundError(f"EDF not found: {edf_path}")
@@ -179,7 +166,7 @@ def extract_react_times(edf_path: str) -> Dict[int, float]:
                             sec_251_round = int(round(sec_251, 0))
                             react_time = round(sec_253 - sec_251, 1)
                             key = int(round(sec_251_round * 10))
-                            print(sec_251, sec_251_round,key, react_time)
+                            #print(sec_251, sec_251_round,key, react_time)
                             if key not in events:
                                 events[key] = react_time
                         stage = 1
@@ -250,7 +237,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--edf", nargs="+", help="EDF file paths")
+    group.add_argument("--edf", help="EDF file path")
 
     parser.add_argument("--channel", default="FP2", help="Channel name to match (default: FP2)")
 
@@ -266,13 +253,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, float, float, int]]) -> None:
+def save_csv(output_path: str, rows: List[Tuple[int, float, float, float, float, float, float, int]]) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(
             [
-                "file",
                 "second",
                 "theta_power",
                 "alpha_power",
@@ -280,90 +266,81 @@ def save_csv(output_path: str, rows: List[Tuple[str, int, float, float, float, f
                 "alpha_beta",
                 "alpha_theta",
                 "alpha_total",
-                "eyeblinking_count"
+                "eyeblinking_count",
+                "react_time"
             ]
         )
         writer.writerows(rows)
 
 def main() -> int:
     args = parse_args()
-    edf_files = []
-
-    if args.edf:
-        edf_files = [os.path.abspath(p) for p in args.edf]
-
-    if len(edf_files) == 0:
-        print("No EDF files to process.")
+    if not args.edf:
+        print("No EDF file to process.")
         return 1
+    edf_path = os.path.abspath(args.edf)
 
     total_secs = 0
     total_valid = 0
     total_skipped = 0
-    csv_rows: List[Tuple[str, int, float, float, float, float, float, float, int]] = []
+    csv_rows: List[Tuple[int, float, float, float, float, float, float, int]] = []
+    dat_root, _ = os.path.splitext(edf_path)
+    dat_path = dat_root + "_arousal info.dat"
+    blink_seconds = load_eyeblinkning(dat_path)
+    signal, fs = load_channel_signal(edf_path, args.channel)
+    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total = compute_band_powers_and_ratios_fft(
+        signal,
+        fs,
+        theta_low=args.theta_low,
+        theta_high=args.theta_high,
+        alpha_low=args.alpha_low,
+        alpha_high=args.alpha_high,
+        beta_low=args.beta_low,
+        beta_high=args.beta_high,
+    )
 
-    for path in edf_files:
-        dat_path = path.replace(".edf", "_arousal info.dat")
-        blink_seconds = load_eyeblinkning(dat_path)
-        signal, fs = load_channel_signal(path, args.channel)
-        theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total = compute_band_powers_and_ratios_fft(
-            signal,
-            fs,
-            theta_low=args.theta_low,
-            theta_high=args.theta_high,
-            alpha_low=args.alpha_low,
-            alpha_high=args.alpha_high,
-            beta_low=args.beta_low,
-            beta_high=args.beta_high,
-        )
+    n_secs = int(theta_power.size)
+    valid_mask = ~(np.isnan(theta_power) | np.isnan(alpha_power) | np.isnan(beta_power))
+    valid_secs = int(np.sum(valid_mask))
+    skipped = int(n_secs - valid_secs)
 
-        n_secs = int(theta_power.size)
-        valid_mask = ~(np.isnan(theta_power) | np.isnan(alpha_power) | np.isnan(beta_power))
-        valid_secs = int(np.sum(valid_mask))
-        skipped = int(n_secs - valid_secs)
+    total_secs += n_secs
+    total_valid += valid_secs
+    total_skipped += skipped
 
-        total_secs += n_secs
-        total_valid += valid_secs
-        total_skipped += skipped
+    print(
+        f"{os.path.basename(edf_path)}: seconds={n_secs}, "
+        f"valid={valid_secs}, skipped={skipped}"
+    )
 
-        print(
-            f"{os.path.basename(path)}: seconds={n_secs}, "
-            f"valid={valid_secs}, skipped={skipped}"
-        )
+    if args.save_csv:
+        for sec_idx in range(n_secs):
+            t = sec_idx + 1
+            start_range = max(0, t - 30)
+            count = sum(1 for blink in blink_seconds if start_range <= blink <= t)
+            t_val = float(theta_power[sec_idx]) if not np.isnan(theta_power[sec_idx]) else float("nan")
+            a_val = float(alpha_power[sec_idx]) if not np.isnan(alpha_power[sec_idx]) else float("nan")
+            b_val = float(beta_power[sec_idx]) if not np.isnan(beta_power[sec_idx]) else float("nan")
+            ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
+            at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
+            atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
 
-        if args.save_csv:
-            for sec_idx in range(n_secs):
-                t = sec_idx + 1
-                start_range = max(0, t - 30)
-                count = sum(1 for blink in blink_seconds if start_range <= blink <= t)
-                t_val = float(theta_power[sec_idx]) if not np.isnan(theta_power[sec_idx]) else float("nan")
-                a_val = float(alpha_power[sec_idx]) if not np.isnan(alpha_power[sec_idx]) else float("nan")
-                b_val = float(beta_power[sec_idx]) if not np.isnan(beta_power[sec_idx]) else float("nan")
-                ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
-                at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
-                atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
-
-                csv_rows.append((
-                    os.path.basename(path),
-                    t,
-                    t_val, a_val, b_val,
-                    ab_val, at_val, atotal_val,
-                    count
-                ))
+            csv_rows.append((
+                t,
+                t_val, a_val, b_val,
+                ab_val, at_val, atotal_val,
+                count
+            ))
 
     print("--- Summary ---")
-    print(f"Files processed: {len(edf_files)}")
+    print("Files processed: 1")
     print(f"Total seconds: {total_secs}")
     print(f"Valid seconds: {total_valid}")
     print(f"Skipped seconds (invalid): {total_skipped}")
 
     if args.save_csv:
         save_csv(args.save_csv, csv_rows)
-
-        if len(edf_files) == 1:
-            events = extract_react_times(edf_files[0])
-            merge_react_time_into_csv(args.save_csv, events)
-        else:
-            print("Multiple EDF files provided. Skipping react_time merge.")
+        events = extract_react_times(edf_path)
+        merge_react_time_into_csv(args.save_csv, events)
 
         print(f"Saved per-second values to: {args.save_csv}")
 
