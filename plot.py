@@ -6,6 +6,7 @@ import pandas as pd
 
 def get_args():
     parser = argparse.ArgumentParser(description='plot EEG data from a CSV file')
+    parser.add_argument("--file", type=str, help='The path to the CSV file')
     parser.add_argument("--mode", type=int, choices=[1, 2], default=2, help='1:use α/total ratio, 2: use α/β ratio and α/θ ratio')
     return parser.parse_args()
 
@@ -55,5 +56,13 @@ def plot_eeg_data(csv_file, mode):
 
 if __name__ == "__main__":
     args = get_args()
-    csv_file = r'result.csv'
+    csv_file = args.file
+    if csv_file is None:
+        print('Hint: The --file parameter was not detected.')
+        csv_file = input('Please enter the path to the CSV file: ').strip().replace('"', '').replace("'", "")
+
+    if not os.path.exists(csv_file):
+        print(f"Error: The file '{csv_file}' does not exist.")
+        sys.exit(1)
+        
     plot_eeg_data(csv_file, args.mode)
