@@ -5,13 +5,13 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 def get_args():
-    parser = argparse.ArgumentParser(description='plot EEG data from a CSV file')
-    parser.add_argument("--file", type=str, help='The path to the CSV file')
+    parser = argparse.ArgumentParser(description='plot EEG data from a Excel file')
+    parser.add_argument("--file", type=str, help='The path to the Excel file')
     parser.add_argument("--mode", type=int, choices=[1, 2], default=2, help='1:use α/total ratio, 2: use α/β ratio and α/θ ratio')
     return parser.parse_args()
 
-def plot_eeg_data(csv_file, mode):
-    df = pd.read_csv(csv_file)
+def plot_eeg_data (xlsx_file, mode):
+    df = pd.read_excel(xlsx_file)
     eeg_file = df['file'].iloc[0]
     fig, ax1 = plt.subplots(figsize=(14, 7))
 
@@ -56,13 +56,13 @@ def plot_eeg_data(csv_file, mode):
 
 if __name__ == "__main__":
     args = get_args()
-    csv_file = args.file
-    if csv_file is None:
+    xlsx_file = args.file
+    if xlsx_file is None:
         print('Hint: The --file parameter was not detected.')
-        csv_file = input('Please enter the path to the CSV file: ').strip().replace('"', '').replace("'", "")
+        xlsx_file = input('Please enter the path to the Excel file: ').strip().replace('"', '').replace("'", "")
 
-    if not os.path.exists(csv_file):
-        print(f"Error: The file '{csv_file}' does not exist.")
+    if not os.path.exists(xlsx_file):
+        print(f"Error: The file '{xlsx_file}' does not exist.")
         sys.exit(1)
-        
-    plot_eeg_data(csv_file, args.mode)
+
+    plot_eeg_data(xlsx_file, args.mode)
