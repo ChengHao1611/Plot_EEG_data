@@ -17,6 +17,8 @@ XLSX_FIELDNAMES = [
     "alpha_beta",
     "alpha_theta",
     "alpha_total",
+    "alpha_minus_beta",
+    "alpha_minus_theta",
     "eyeblinking_count",
     "react_time",
 ]
@@ -73,20 +75,20 @@ def compute_band_powers_and_ratios_fft(
     alpha_high: float,
     beta_low: float,
     beta_high: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty
 
     win = int(round(fs))
     if win <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty
 
     n_secs = int(signal.size // win)
     if n_secs == 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty
 
     freqs = np.fft.rfftfreq(win, d=1.0 / fs)
     theta_mask = (freqs >= theta_low) & (freqs < theta_high)
@@ -105,6 +107,8 @@ def compute_band_powers_and_ratios_fft(
     alpha_beta = np.full(n_secs, np.nan, dtype=float)
     alpha_theta = np.full(n_secs, np.nan, dtype=float)
     alpha_total = np.full(n_secs, np.nan, dtype=float)
+    alpha_minus_beta = np.full(n_secs, np.nan, dtype=float)
+    alpha_minus_theta = np.full(n_secs, np.nan, dtype=float)
 
 
     for s in range(n_secs):
@@ -128,6 +132,8 @@ def compute_band_powers_and_ratios_fft(
         theta_power[s] = p_theta
         alpha_power[s] = p_alpha
         beta_power[s] = p_beta
+        alpha_minus_beta[s] = p_alpha - p_beta
+        alpha_minus_theta[s] = p_alpha - p_theta
 
         if p_beta > 0.0:
             alpha_beta[s] = p_alpha / p_beta
@@ -137,7 +143,7 @@ def compute_band_powers_and_ratios_fft(
         if p_total > 0.0:
             alpha_total[s] = p_alpha / p_total
 
-    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total
+    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta
 
 
 def extract_react_times(edf_path: str) -> Dict[int, float]:
@@ -288,8 +294,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--theta-low", type=float, default=4.0, help="Theta band low cutoff (Hz)")
     parser.add_argument("--theta-high", type=float, default=8.0, help="Theta band high cutoff (Hz)")
     parser.add_argument("--alpha-low", type=float, default=8.0, help="Alpha band low cutoff (Hz)")
-    parser.add_argument("--alpha-high", type=float, default=12.0, help="Alpha band high cutoff (Hz)")
-    parser.add_argument("--beta-low", type=float, default=12.0, help="Beta band low cutoff (Hz)")
+    parser.add_argument("--alpha-high", type=float, default=13.0, help="Alpha band high cutoff (Hz)")
+    parser.add_argument("--beta-low", type=float, default=13.0, help="Beta band low cutoff (Hz)")
     parser.add_argument("--beta-high", type=float, default=30.0, help="Beta band high cutoff (Hz)")
 
     return parser.parse_args()
@@ -333,7 +339,7 @@ def main() -> int:
     dat_path = dat_root + "_arousal info.dat"
     blink_seconds = load_eyeblinkning(dat_path)
     signal, fs = load_channel_signal(edf_path, args.channel)
-    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total = compute_band_powers_and_ratios_fft(
+    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta = compute_band_powers_and_ratios_fft(
         signal,
         fs,
         theta_low=args.theta_low,
@@ -368,6 +374,8 @@ def main() -> int:
         ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
         at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
         atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
+        a_minus_b_val = float(alpha_minus_beta[sec_idx]) if not np.isnan(alpha_minus_beta[sec_idx]) else float("nan")
+        a_minus_t_val = float(alpha_minus_theta[sec_idx]) if not np.isnan(alpha_minus_theta[sec_idx]) else float("nan")
 
         output_rows.append({
             "second": t,
@@ -377,6 +385,8 @@ def main() -> int:
             "alpha_beta": ab_val,
             "alpha_theta": at_val,
             "alpha_total": atotal_val,
+            "alpha_minus_beta": a_minus_b_val,
+            "alpha_minus_theta": a_minus_t_val,
             "eyeblinking_count": count,
             "react_time": None,
         })
