@@ -12,7 +12,7 @@ def get_args():
 
 def plot_eeg_data (xlsx_file, mode):
     df = pd.read_excel(xlsx_file)
-    eeg_file = df['file'].iloc[0]
+    eeg_file = os.path.basename(xlsx_file).split('_raw_')[0]
     fig, ax1 = plt.subplots(figsize=(14, 7))
 
     events = df[df['react_time'] > 0]
