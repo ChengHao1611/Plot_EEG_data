@@ -9,6 +9,18 @@ from openpyxl.styles import Font
 
 RED_FONT = Font(color="FFFF0000")
 
+XLSX_FIELDNAMES = [
+    "second",
+    "theta_power",
+    "alpha_power",
+    "beta_power",
+    "alpha_beta",
+    "alpha_theta",
+    "alpha_total",
+    "eyeblinking_count",
+    "react_time",
+]
+
 def load_eyeblinkning(data_path: str) -> List[int]:
     if not os.path.exists(data_path):
         print(f"Warning: arousal data file not found: {data_path}")
@@ -64,26 +76,27 @@ def compute_band_powers_and_ratios_fft(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty
 
     win = int(round(fs))
     if win <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty
 
     n_secs = int(signal.size // win)
     if n_secs == 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty
 
     freqs = np.fft.rfftfreq(win, d=1.0 / fs)
     theta_mask = (freqs >= theta_low) & (freqs < theta_high)
     alpha_mask = (freqs >= alpha_low) & (freqs < alpha_high)
     beta_mask = (freqs >= beta_low) & (freqs <= beta_high)
+    total_mask = (freqs >= 1) & (freqs <= 40)
 
     if not np.any(theta_mask) or not np.any(alpha_mask) or not np.any(beta_mask):
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty
 
     window = np.hanning(win)
     theta_power = np.full(n_secs, np.nan, dtype=float)
@@ -110,6 +123,7 @@ def compute_band_powers_and_ratios_fft(
         p_theta = float(np.sum(power[theta_mask]))
         p_alpha = float(np.sum(power[alpha_mask]))
         p_beta = float(np.sum(power[beta_mask]))
+        p_total = float(np.sum(power[total_mask]))
 
         theta_power[s] = p_theta
         alpha_power[s] = p_alpha
@@ -120,7 +134,8 @@ def compute_band_powers_and_ratios_fft(
         if p_theta > 0.0:
             alpha_theta[s] = p_alpha / p_theta
         
-        alpha_total[s] = p_alpha / (p_alpha + p_beta + p_theta)
+        if p_total > 0.0:
+            alpha_total[s] = p_alpha / p_total
 
     return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total
 
@@ -202,16 +217,14 @@ def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None
 
     wb = load_workbook(xlsx_path)
     ws = wb.active
-    fieldnames = [
-        cell.value for cell in ws[1]
-        if cell.value is not None
-    ]
+    fieldnames = [cell.value for cell in ws[1] if cell.value is not None]
 
     if "second" not in fieldnames:
         raise ValueError("XLSX must contain 'second' column.")
 
-    if "react_time" not in fieldnames:
-        fieldnames.append("react_time")
+    for name in XLSX_FIELDNAMES:
+        if name not in fieldnames:
+            fieldnames.append(name)
 
     rows: List[Dict[str, float | int | str | None]] = []
     for row_idx in range(2, ws.max_row + 1):
@@ -257,7 +270,6 @@ def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None
     for row in rows:
         ws.append([row.get(name) for name in fieldnames])
     apply_ratio_highlights(ws, fieldnames)
-
     wb.save(xlsx_path)
 
 
@@ -280,60 +292,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beta-low", type=float, default=12.0, help="Beta band low cutoff (Hz)")
     parser.add_argument("--beta-high", type=float, default=30.0, help="Beta band high cutoff (Hz)")
 
-    parser.add_argument(
-        "--save-xlsx",
-        "--save-csv",
-        dest="save_xlsx",
-        default=None,
-        help="Optional XLSX output path",
-    )
-
     return parser.parse_args()
 
 
-def normalize_xlsx_path(output_path: str) -> str:
-    root, ext = os.path.splitext(output_path)
-    if ext.lower() == ".xlsx":
-        return output_path
-    return root + ".xlsx" if ext else output_path + ".xlsx"
+def sanitize_filename_part(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
 
 
-def save_xlsx(output_path: str, rows: List[Tuple[int, float, float, float, float, float, float, int]]) -> None:
+def default_xlsx_path(edf_path: str, channel_name: str) -> str:
+    root, _ = os.path.splitext(edf_path)
+    safe_channel = sanitize_filename_part(channel_name)
+    return f"{root}_{safe_channel}.xlsx"
+
+def save_xlsx(
+    output_path: str,
+    rows: List[Dict[str, float | int | str | None]],
+) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     wb = Workbook()
     ws = wb.active
     ws.title = "result"
-    ws.append(
-        [
-            "second",
-            "theta_power",
-            "alpha_power",
-            "beta_power",
-            "alpha_beta",
-            "alpha_theta",
-            "alpha_total",
-            "eyeblinking_count",
-            "react_time",
-        ]
-    )
-
+    ws.append(XLSX_FIELDNAMES)
     for row in rows:
-        ws.append(list(row) + [None])
-    apply_ratio_highlights(
-        ws,
-        [
-            "second",
-            "theta_power",
-            "alpha_power",
-            "beta_power",
-            "alpha_beta",
-            "alpha_theta",
-            "alpha_total",
-            "eyeblinking_count",
-            "react_time",
-        ],
-    )
-
+        ws.append([row.get(name) for name in XLSX_FIELDNAMES])
+    apply_ratio_highlights(ws, XLSX_FIELDNAMES)
     wb.save(output_path)
 
 def main() -> int:
@@ -346,7 +328,7 @@ def main() -> int:
     total_secs = 0
     total_valid = 0
     total_skipped = 0
-    output_rows: List[Tuple[int, float, float, float, float, float, float, int]] = []
+    output_rows: List[Dict[str, float | int | str | None]] = []
     dat_root, _ = os.path.splitext(edf_path)
     dat_path = dat_root + "_arousal info.dat"
     blink_seconds = load_eyeblinkning(dat_path)
@@ -376,38 +358,39 @@ def main() -> int:
         f"valid={valid_secs}, skipped={skipped}"
     )
 
-    if args.save_xlsx:
-        for sec_idx in range(n_secs):
-            t = sec_idx + 1
-            start_range = max(0, t - 30)
-            count = sum(1 for blink in blink_seconds if start_range <= blink <= t)
-            t_val = float(theta_power[sec_idx]) if not np.isnan(theta_power[sec_idx]) else float("nan")
-            a_val = float(alpha_power[sec_idx]) if not np.isnan(alpha_power[sec_idx]) else float("nan")
-            b_val = float(beta_power[sec_idx]) if not np.isnan(beta_power[sec_idx]) else float("nan")
-            ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
-            at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
-            atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
+    for sec_idx in range(n_secs):
+        t = sec_idx + 1
+        start_range = max(0, t - 30)
+        count = sum(1 for blink in blink_seconds if start_range <= blink <= t)
+        t_val = float(theta_power[sec_idx]) if not np.isnan(theta_power[sec_idx]) else float("nan")
+        a_val = float(alpha_power[sec_idx]) if not np.isnan(alpha_power[sec_idx]) else float("nan")
+        b_val = float(beta_power[sec_idx]) if not np.isnan(beta_power[sec_idx]) else float("nan")
+        ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
+        at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
+        atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
 
-            output_rows.append((
-                t,
-                t_val, a_val, b_val,
-                ab_val, at_val, atotal_val,
-                count
-            ))
+        output_rows.append({
+            "second": t,
+            "theta_power": t_val,
+            "alpha_power": a_val,
+            "beta_power": b_val,
+            "alpha_beta": ab_val,
+            "alpha_theta": at_val,
+            "alpha_total": atotal_val,
+            "eyeblinking_count": count,
+            "react_time": None,
+        })
 
     print("--- Summary ---")
-    print("Files processed: 1")
     print(f"Total seconds: {total_secs}")
     print(f"Valid seconds: {total_valid}")
     print(f"Skipped seconds (invalid): {total_skipped}")
 
-    if args.save_xlsx:
-        output_path = normalize_xlsx_path(args.save_xlsx)
-        save_xlsx(output_path, output_rows)
-        events = extract_react_times(edf_path)
-        merge_react_time_into_xlsx(output_path, events)
-
-        print(f"Saved per-second values to: {output_path}")
+    xlsx_output_path = default_xlsx_path(edf_path, args.channel)
+    save_xlsx(xlsx_output_path, output_rows)
+    events = extract_react_times(edf_path)
+    merge_react_time_into_xlsx(xlsx_output_path, events)
+    print(f"Saved per-second values to: {xlsx_output_path}")
 
     return 0
 
