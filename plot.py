@@ -24,8 +24,10 @@ def plot_eeg_data (xlsx_file, mode):
         end_t = start_t + duration
 
         label = 'Event' if not shaded_label_added else ""
-        ax1.axvspan(start_t, end_t, color='yellow', alpha=0.3, label=label, zorder = 1)
-        shaded_label_added = True
+        p = ax1.axvspan(start_t, end_t, color='yellow', alpha=0.3, label=label, zorder = 1)
+        if not shaded_label_added:
+            event_patch = p
+            shaded_label_added = True
 
     if mode == 2:
         line1, = ax1.plot(df['second'], df['alpha_beta'], label='α/β Ratio', color='blue', alpha=0.7, zorder = 3)
@@ -44,12 +46,15 @@ def plot_eeg_data (xlsx_file, mode):
     ax2.set_ylabel('Eyeblink Count (per 30s)', color='red')
     ax2.tick_params(axis='y', labelcolor='red')
 
+    elements = []
+    if event_patch:
+        elements.append(event_patch)
     if mode == 2:
-        lines = [line1, line2, line3]
+        elements.extend([line1, line2, line3])
     else:
-        lines = [line1, line3]
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc='upper right')
+        elements.extend([line1, line3])
+    labels = [obj.get_label() for obj in elements]
+    ax1.legend(elements, labels, loc='upper right')
     plt.title(eeg_file)
     plt.tight_layout()
     plt.show()
