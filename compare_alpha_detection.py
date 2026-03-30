@@ -77,6 +77,10 @@ def build_input_paths(folder: Path, prefix: str) -> Tuple[Path, Path]:
     return dat_path, xlsx_path
 
 
+def build_eye_dat_path(folder: Path, prefix: str) -> Path:
+    return folder / f"{prefix}_arousal info.dat"
+
+
 def parse_numeric_tokens(text: str) -> List[int]:
     matches = re.findall(r"[-+]?\d+(?:\.\d+)?", text)
     return [int(round(float(token))) for token in matches]
@@ -241,9 +245,11 @@ def load_positive_records_from_xlsx(xlsx_path: Path, beta: float = 0, theta: flo
 def compare_seconds(
     dat_seconds: Sequence[int],
     xlsx_positive_records: Iterable[dict[str, int | float | None]],
+    eye_dat_seconds: Sequence[int] | None = None,
 ) -> Tuple[int, int, int, List[dict[str, int | float | None]]]:
     dat_list = list(dat_seconds)
     xlsx_list = list(xlsx_positive_records)
+    eye_dat_second_set = set(eye_dat_seconds or [])
 
     pointer = 0
     true_positive = 0
@@ -283,6 +289,8 @@ def compare_seconds(
             })
             pointer += 1
         else:
+            if second in eye_dat_second_set:
+                continue
             false_positive += 1
             result_rows.append({
                 "second": second,
@@ -407,15 +415,18 @@ def main() -> int:
     input_path = normalize_user_path(raw_input_path)
     folder, prefix = resolve_folder_and_prefix(input_path)
     dat_path, xlsx_path = build_input_paths(folder, prefix)
+    eye_dat_path = build_eye_dat_path(folder, prefix)
 
     output_path = normalize_user_path(args.output) if args.output else default_output_path(folder, prefix)
 
     dat_seconds = load_dat_seconds(dat_path)
+    eye_dat_seconds = load_dat_seconds(eye_dat_path) if eye_dat_path.exists() else []
     xlsx_positive_records = load_positive_records_from_xlsx(xlsx_path)
 
     true_positive, false_positive, miss_positive, result_rows = compare_seconds(
         dat_seconds,
         xlsx_positive_records,
+        eye_dat_seconds,
     )
     summary = summarize_counts(true_positive, false_positive, miss_positive)
 
@@ -440,6 +451,7 @@ def main() -> int:
     print(f"資料夾: {folder}")
     print(f"前綴: {prefix}")
     print(f"DAT: {dat_path}")
+    print(f"眼動DAT: {eye_dat_path}")
     print(f"XLSX: {xlsx_path}")
     print(f"輸出: {output_path}")
     print(f"true_positive: {true_positive}")
@@ -469,6 +481,7 @@ def main() -> int:
         true_positive, false_positive, miss_positive, result_rows = compare_seconds(
             dat_seconds,
             xlsx_positive_records,
+            eye_dat_seconds,
         )
         print(f"\n第{i}%: ")
         print(f"true_positve: {true_positive}" )
