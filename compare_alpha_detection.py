@@ -2,6 +2,7 @@ import argparse
 import math
 import re
 from pathlib import Path
+from statistics import median
 from typing import Iterable, List, Sequence, Tuple
 
 from openpyxl import Workbook, load_workbook
@@ -325,10 +326,14 @@ def safe_divide(numerator: int, denominator: int) -> str:
     return format_float(safe_divide_float(numerator, denominator))
 
 
-def calculate_average(values: Sequence[float]) -> str:
-    if not values:
-        return "N/A"
-    return format_float(sum(values) / len(values))
+def calculate_percentage_threshold(sorted_values: Sequence[float], percentage: int = 50) -> float:
+    if not sorted_values:
+        raise ValueError("Cannot calculate percentage threshold from empty values.")
+    if percentage < 1 or percentage > 100:
+        raise ValueError(f"Percentage {percentage} is out of range.")
+
+    position = max(1, math.ceil(len(sorted_values) * percentage / 100))
+    return float(sorted_values[position - 1])
 
 
 def collect_metric_values(
@@ -414,17 +419,20 @@ def main() -> int:
     )
     summary = summarize_counts(true_positive, false_positive, miss_positive)
 
-    tp_alpha_minus_beta_avg = calculate_average(
-        collect_metric_values(result_rows, "true_positive", "alpha_minus_beta")
+    tp_alpha_minus_beta_median = calculate_percentage_threshold(
+        sorted(collect_metric_values(result_rows, "true_positive", "alpha_minus_beta"))
     )
-    tp_alpha_minus_theta_avg = calculate_average(
-        collect_metric_values(result_rows, "true_positive", "alpha_minus_theta")
+    tp_alpha_minus_theta_median = calculate_percentage_threshold(
+        sorted(collect_metric_values(result_rows, "true_positive", "alpha_minus_theta"))
     )
-    fp_alpha_minus_beta_avg = calculate_average(
-        collect_metric_values(result_rows, "false_positive", "alpha_minus_beta")
+
+    fp_alpha_minus_beta = sorted(collect_metric_values(result_rows, "false_positive", "alpha_minus_beta"))
+    fp_alpha_minus_theta = sorted(collect_metric_values(result_rows, "false_positive", "alpha_minus_theta"))
+    fp_alpha_minus_beta_median = calculate_percentage_threshold(
+        fp_alpha_minus_beta
     )
-    fp_alpha_minus_theta_avg = calculate_average(
-        collect_metric_values(result_rows, "false_positive", "alpha_minus_theta")
+    fp_alpha_minus_theta_median = calculate_percentage_threshold(
+        fp_alpha_minus_theta
     )
 
     save_result_xlsx(output_path, result_rows)
@@ -447,10 +455,37 @@ def main() -> int:
         "漏抓率 (miss_positive / (true_positive + miss_positive)): "
         f"{format_float(summary['miss_positive_rate'])}"
     )
-    print(f"正確 alpha_minus_beta 平均: {tp_alpha_minus_beta_avg}")
-    print(f"正確 alpha_minus_theta 平均: {tp_alpha_minus_theta_avg}")
-    print(f"誤抓 alpha_minus_beta 平均: {fp_alpha_minus_beta_avg}")
-    print(f"誤抓 alpha_minus_theta 平均: {fp_alpha_minus_theta_avg}")
+    print(f"正確 alpha_minus_beta 中位數: {tp_alpha_minus_beta_median}")
+    print(f"正確 alpha_minus_theta 中位數: {tp_alpha_minus_theta_median}")
+    print(f"誤抓 alpha_minus_beta 中位數: {fp_alpha_minus_beta_median}")
+    print(f"誤抓 alpha_minus_theta 中位數: {fp_alpha_minus_theta_median}")
+
+    min_index = 30
+    min_value = 1
+    for i in range(30,81):
+        beta = calculate_percentage_threshold(fp_alpha_minus_beta, i)
+        theta = calculate_percentage_threshold(fp_alpha_minus_theta, i)
+        xlsx_positive_records = load_positive_records_from_xlsx(xlsx_path, beta, theta)
+        true_positive, false_positive, miss_positive, result_rows = compare_seconds(
+            dat_seconds,
+            xlsx_positive_records,
+        )
+        print(f"\n第{i}%: ")
+        print(f"true_positve: {true_positive}" )
+        print(f"false_positive: {false_positive}" )
+        print(f"miss_positive: {miss_positive}" )
+        print(f"total: {true_positive + false_positive + miss_positive}" )
+        print("誤抓率: " + safe_divide(false_positive, true_positive + false_positive))
+        print("漏抓率: " + safe_divide(miss_positive, true_positive + miss_positive))
+        false_rate = safe_divide_float(false_positive, true_positive + false_positive)
+        miss_rate = safe_divide_float(miss_positive, true_positive + miss_positive)
+        ratio = 2 * false_rate * miss_rate / (false_rate + miss_rate) if (false_rate is not None and miss_rate is not None and (false_rate + miss_rate) > 0) else None
+        print(f"ratio: {ratio if ratio is not None else 'N/A'}" )
+        if ratio is not None and ratio < min_value:
+            min_value = ratio
+            min_index = i
+
+    print(f"\n最佳解: {min_index}% -> ratio={format_float(min_value)}")
 
     return 0
 
