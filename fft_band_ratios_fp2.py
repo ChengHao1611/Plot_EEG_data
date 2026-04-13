@@ -17,6 +17,7 @@ XLSX_FIELDNAMES = [
     "alpha_beta",
     "alpha_theta",
     "alpha_total",
+    "alpha_peak",
     "alpha_minus_beta",
     "alpha_minus_theta",
     "eyeblinking_count",
@@ -76,20 +77,20 @@ def compute_band_powers_and_ratios_fft(
     beta_low: float,
     beta_high: float,
     use_psd: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty
 
     win = int(round(fs))
     if win <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty
 
     n_secs = int(signal.size // win)
     if n_secs == 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty
 
     freqs = np.fft.rfftfreq(win, d=1.0 / fs)
     theta_mask = (freqs >= theta_low) & (freqs < theta_high)
@@ -99,17 +100,19 @@ def compute_band_powers_and_ratios_fft(
 
     if not np.any(theta_mask) or not np.any(alpha_mask) or not np.any(beta_mask):
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty
 
     window = np.hanning(win)
     window_power = float(np.sum(window ** 2))
     df = float(freqs[1] - freqs[0]) if freqs.size > 1 else 0.0
+    peak_mask = (freqs >= 2.0) & (freqs <= 30.0)
     theta_power = np.full(n_secs, np.nan, dtype=float)
     alpha_power = np.full(n_secs, np.nan, dtype=float)
     beta_power = np.full(n_secs, np.nan, dtype=float)
     alpha_beta = np.full(n_secs, np.nan, dtype=float)
     alpha_theta = np.full(n_secs, np.nan, dtype=float)
     alpha_total = np.full(n_secs, np.nan, dtype=float)
+    alpha_peak = np.full(n_secs, np.nan, dtype=float)
     alpha_minus_beta = np.full(n_secs, np.nan, dtype=float)
     alpha_minus_theta = np.full(n_secs, np.nan, dtype=float)
 
@@ -139,6 +142,12 @@ def compute_band_powers_and_ratios_fft(
                 if power.size > 1:
                     power[1:] *= 2.0
 
+        if np.any(peak_mask):
+            peak_rel_idx = int(np.argmax(power[peak_mask]))
+            peak_abs_idx = int(np.flatnonzero(peak_mask)[peak_rel_idx])
+            peak_freq = float(freqs[peak_abs_idx])
+            alpha_peak[s] = 1.0 if (peak_freq >= float(alpha_low) and peak_freq < float(alpha_high)) else 0.0
+
         p_theta = float(np.sum(power[theta_mask]))
         p_alpha = float(np.sum(power[alpha_mask]))
         p_beta = float(np.sum(power[beta_mask]))
@@ -164,7 +173,7 @@ def compute_band_powers_and_ratios_fft(
         if p_total > 0.0:
             alpha_total[s] = p_alpha / p_total
 
-    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta
+    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak
 
 
 def extract_react_times(edf_path: str) -> Dict[int, float]:
@@ -368,7 +377,7 @@ def main() -> int:
     dat_path = dat_root + "_arousal info.dat"
     blink_seconds = load_eyeblinkning(dat_path)
     signal, fs = load_channel_signal(edf_path, args.channel)
-    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta = compute_band_powers_and_ratios_fft(
+    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak = compute_band_powers_and_ratios_fft(
         signal,
         fs,
         theta_low=args.theta_low,
@@ -404,6 +413,8 @@ def main() -> int:
         ab_val = float(alpha_beta[sec_idx]) if not np.isnan(alpha_beta[sec_idx]) else float("nan")
         at_val = float(alpha_theta[sec_idx]) if not np.isnan(alpha_theta[sec_idx]) else float("nan")
         atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
+        apeak_raw = float(alpha_peak[sec_idx]) if not np.isnan(alpha_peak[sec_idx]) else float("nan")
+        apeak_val = int(round(apeak_raw)) if np.isfinite(apeak_raw) else None
         a_minus_b_val = float(alpha_minus_beta[sec_idx]) if not np.isnan(alpha_minus_beta[sec_idx]) else float("nan")
         a_minus_t_val = float(alpha_minus_theta[sec_idx]) if not np.isnan(alpha_minus_theta[sec_idx]) else float("nan")
 
@@ -415,6 +426,7 @@ def main() -> int:
             "alpha_beta": ab_val,
             "alpha_theta": at_val,
             "alpha_total": atotal_val,
+            "alpha_peak": apeak_val,
             "alpha_minus_beta": a_minus_b_val,
             "alpha_minus_theta": a_minus_t_val,
             "eyeblinking_count": count,
