@@ -75,6 +75,7 @@ def compute_band_powers_and_ratios_fft(
     alpha_high: float,
     beta_low: float,
     beta_high: float,
+    use_psd: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
@@ -98,9 +99,11 @@ def compute_band_powers_and_ratios_fft(
 
     if not np.any(theta_mask) or not np.any(alpha_mask) or not np.any(beta_mask):
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty
+        return empty, empty, empty, empty, empty, empty, empty, empty
 
     window = np.hanning(win)
+    window_power = float(np.sum(window ** 2))
+    df = float(freqs[1] - freqs[0]) if freqs.size > 1 else 0.0
     theta_power = np.full(n_secs, np.nan, dtype=float)
     alpha_power = np.full(n_secs, np.nan, dtype=float)
     beta_power = np.full(n_secs, np.nan, dtype=float)
@@ -123,11 +126,29 @@ def compute_band_powers_and_ratios_fft(
         seg = seg * window
         spec = np.fft.rfft(seg)
         power = np.abs(spec) ** 2
+        if use_psd:
+            if fs <= 0.0 or window_power <= 0.0:
+                continue
+            power = power / (float(fs) * window_power)
+            # One-sided PSD scaling for real signals:
+            # double all bins except DC (0 Hz) and Nyquist (fs/2, when N even).
+            if win % 2 == 0:
+                if power.size > 2:
+                    power[1:-1] *= 2.0
+            else:
+                if power.size > 1:
+                    power[1:] *= 2.0
 
         p_theta = float(np.sum(power[theta_mask]))
         p_alpha = float(np.sum(power[alpha_mask]))
         p_beta = float(np.sum(power[beta_mask]))
         p_total = float(np.sum(power[total_mask]))
+        if use_psd and df > 0.0:
+            # Convert PSD (power/Hz) to band power by integrating over frequency.
+            p_theta *= df
+            p_alpha *= df
+            p_beta *= df
+            p_total *= df
 
         theta_power[s] = p_theta
         alpha_power[s] = p_alpha
@@ -282,7 +303,7 @@ def merge_react_time_into_xlsx(xlsx_path: str, events: Dict[int, float]) -> None
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute per-second theta/alpha/beta FFT band power and "
+            "Compute per-second theta/alpha/beta FFT band power (or PSD-based band power) and "
             "alpha/beta, alpha/theta ratios for FP2 channel."
         )
     )
@@ -297,6 +318,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha-high", type=float, default=13.0, help="Alpha band high cutoff (Hz)")
     parser.add_argument("--beta-low", type=float, default=13.0, help="Beta band low cutoff (Hz)")
     parser.add_argument("--beta-high", type=float, default=30.0, help="Beta band high cutoff (Hz)")
+    parser.add_argument(
+        "--psd",
+        action="store_true",
+        help=(
+            "Compute band powers by integrating one-sided PSD (power/Hz) instead of raw |FFT|^2 bin sums. "
+            "Enables window-power normalization and one-sided scaling."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -348,6 +377,7 @@ def main() -> int:
         alpha_high=args.alpha_high,
         beta_low=args.beta_low,
         beta_high=args.beta_high,
+        use_psd=bool(args.psd),
     )
 
     n_secs = int(theta_power.size)
