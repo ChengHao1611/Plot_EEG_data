@@ -2,6 +2,7 @@ import argparse
 import os
 from typing import Dict, List, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pyedflib
 from openpyxl import Workbook, load_workbook
@@ -18,6 +19,7 @@ XLSX_FIELDNAMES = [
     "alpha_theta",
     "alpha_total",
     "alpha_peak",
+    "power_2_13",
     "alpha_minus_beta",
     "alpha_minus_theta",
     "eyeblinking_count",
@@ -66,6 +68,32 @@ def load_channel_signal(edf_path: str, channel_name: str) -> Tuple[np.ndarray, f
     return signal, fs
 
 
+def save_power_spectrum_plot(
+    freqs: np.ndarray,
+    power: np.ndarray,
+    *,
+    second_index: int,
+    max_freq: float = 30.0,
+) -> None:
+    plot_mask = np.isfinite(freqs) & np.isfinite(power) & (freqs >= 1.0) & (freqs <= max_freq)
+    if not np.any(plot_mask):
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(freqs[plot_mask], power[plot_mask], color="#1f77b4", linewidth=1.0)
+    ax.set_title("FFT Spectrum of Signal", fontsize=18, fontweight="bold")
+    ax.set_xlabel("Frequency (Hz)", fontsize=16)
+    ax.set_ylabel("Power", fontsize=16)
+    ax.set_xlim(0.0, max_freq)
+    ax.tick_params(direction="in", top=True, right=True, length=7, width=1.0, labelsize=12)
+    fig.tight_layout()
+
+    output_path = os.path.abspath(f"fft_power_s{second_index}.png")
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved FFT power spectrum plot for s={second_index} to: {output_path}")
+
+
 def compute_band_powers_and_ratios_fft(
     signal: np.ndarray,
     fs: float,
@@ -77,20 +105,23 @@ def compute_band_powers_and_ratios_fft(
     beta_low: float,
     beta_high: float,
     use_psd: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if signal.size == 0 or fs <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty, empty
+        empty_obj = np.array([], dtype=object)
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty, empty_obj
 
     win = int(round(fs))
     if win <= 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty, empty
+        empty_obj = np.array([], dtype=object)
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty, empty_obj
 
     n_secs = int(signal.size // win)
     if n_secs == 0:
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty, empty
+        empty_obj = np.array([], dtype=object)
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty, empty_obj
 
     freqs = np.fft.rfftfreq(win, d=1.0 / fs)
     theta_mask = (freqs >= theta_low) & (freqs < theta_high)
@@ -100,12 +131,14 @@ def compute_band_powers_and_ratios_fft(
 
     if not np.any(theta_mask) or not np.any(alpha_mask) or not np.any(beta_mask):
         empty = np.array([], dtype=float)
-        return empty, empty, empty, empty, empty, empty, empty, empty, empty
+        empty_obj = np.array([], dtype=object)
+        return empty, empty, empty, empty, empty, empty, empty, empty, empty, empty_obj
 
     window = np.hanning(win)
     window_power = float(np.sum(window ** 2))
     df = float(freqs[1] - freqs[0]) if freqs.size > 1 else 0.0
     peak_mask = (freqs >= 2.0) & (freqs <= 30.0)
+    report_mask = (freqs >= 2.0) & (freqs <= 13.0)
     theta_power = np.full(n_secs, np.nan, dtype=float)
     alpha_power = np.full(n_secs, np.nan, dtype=float)
     beta_power = np.full(n_secs, np.nan, dtype=float)
@@ -113,10 +146,13 @@ def compute_band_powers_and_ratios_fft(
     alpha_theta = np.full(n_secs, np.nan, dtype=float)
     alpha_total = np.full(n_secs, np.nan, dtype=float)
     alpha_peak = np.full(n_secs, np.nan, dtype=float)
+    power_2_13 = np.full(n_secs, None, dtype=object)
     alpha_minus_beta = np.full(n_secs, np.nan, dtype=float)
     alpha_minus_theta = np.full(n_secs, np.nan, dtype=float)
+    ##不用hanning
+    window_power = 1
 
-
+    win = int(round(fs))
     for s in range(n_secs):
         start = s * win
         end = start + win
@@ -125,14 +161,18 @@ def compute_band_powers_and_ratios_fft(
             continue
         if np.isnan(seg).any():
             continue
-        seg = seg - float(np.mean(seg))
-        seg = seg * window
+        #seg = seg - float(np.mean(seg))
+        #seg = seg * window
         spec = np.fft.rfft(seg)
-        power = np.abs(spec) ** 2
+        # power = np.abs(spec) ** 2
+        # print(len(power))
+        power = np.abs(spec)
+        # print(len(power))
         if use_psd:
             if fs <= 0.0 or window_power <= 0.0:
                 continue
-            power = power / (float(fs) * window_power)
+            #power = power / (float(fs) * window_power)
+            power = power / float(fs)
             # One-sided PSD scaling for real signals:
             # double all bins except DC (0 Hz) and Nyquist (fs/2, when N even).
             if win % 2 == 0:
@@ -146,7 +186,33 @@ def compute_band_powers_and_ratios_fft(
             peak_rel_idx = int(np.argmax(power[peak_mask]))
             peak_abs_idx = int(np.flatnonzero(peak_mask)[peak_rel_idx])
             peak_freq = float(freqs[peak_abs_idx])
-            alpha_peak[s] = 1.0 if (peak_freq >= float(alpha_low) and peak_freq < float(alpha_high)) else 0.0
+            is_alpha_peak = (peak_freq >= float(alpha_low)) and (peak_freq < float(alpha_high))
+            alpha_peak[s] = 1.0 if is_alpha_peak else 0.0
+
+            if is_alpha_peak and np.any(report_mask):
+                report_power = power
+                if use_psd and df > 0.0:
+                    report_power = power  * df
+
+                parts: List[str] = []
+                report_freqs = freqs[report_mask]
+                report_vals = report_power[report_mask]
+                for f, v in zip(report_freqs.tolist(), report_vals.tolist()):
+                    try:
+                        if not np.isfinite(v):
+                            continue
+                        f_round = round(float(f), 6)
+                        if abs(f_round - round(f_round)) < 1e-6:
+                            f_str = str(int(round(f_round)))
+                        else:
+                            f_str = f"{f_round:g}"
+                        parts.append(f"{f_str}Hz={float(v):.6g}")
+                    except Exception:
+                        continue
+                power_2_13[s] = ",".join(parts) if parts else None
+
+        if s == 3539 or s == 3432 or s == 3436 or s == 120:
+            save_power_spectrum_plot(freqs, power * 500, second_index=s+1)
 
         p_theta = float(np.sum(power[theta_mask]))
         p_alpha = float(np.sum(power[alpha_mask]))
@@ -173,7 +239,7 @@ def compute_band_powers_and_ratios_fft(
         if p_total > 0.0:
             alpha_total[s] = p_alpha / p_total
 
-    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak
+    return theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak, power_2_13
 
 
 def extract_react_times(edf_path: str) -> Dict[int, float]:
@@ -377,7 +443,7 @@ def main() -> int:
     dat_path = dat_root + "_arousal info.dat"
     blink_seconds = load_eyeblinkning(dat_path)
     signal, fs = load_channel_signal(edf_path, args.channel)
-    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak = compute_band_powers_and_ratios_fft(
+    theta_power, alpha_power, beta_power, alpha_beta, alpha_theta, alpha_total, alpha_minus_beta, alpha_minus_theta, alpha_peak, power_2_13 = compute_band_powers_and_ratios_fft(
         signal,
         fs,
         theta_low=args.theta_low,
@@ -415,6 +481,7 @@ def main() -> int:
         atotal_val = float(alpha_total[sec_idx]) if not np.isnan(alpha_total[sec_idx]) else float("nan")
         apeak_raw = float(alpha_peak[sec_idx]) if not np.isnan(alpha_peak[sec_idx]) else float("nan")
         apeak_val = int(round(apeak_raw)) if np.isfinite(apeak_raw) else None
+        band_report_val = power_2_13[sec_idx] if (apeak_val == 1) else None
         a_minus_b_val = float(alpha_minus_beta[sec_idx]) if not np.isnan(alpha_minus_beta[sec_idx]) else float("nan")
         a_minus_t_val = float(alpha_minus_theta[sec_idx]) if not np.isnan(alpha_minus_theta[sec_idx]) else float("nan")
 
@@ -427,6 +494,7 @@ def main() -> int:
             "alpha_theta": at_val,
             "alpha_total": atotal_val,
             "alpha_peak": apeak_val,
+            "power_2_13": band_report_val,
             "alpha_minus_beta": a_minus_b_val,
             "alpha_minus_theta": a_minus_t_val,
             "eyeblinking_count": count,
