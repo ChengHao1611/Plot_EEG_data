@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--channel", default="FP2", help="Channel name to match (default: FP2)")
     parser.add_argument(
         "--plot-dir",
-        help="Optional output folder for true/false/miss_ plots.",
+        help="Optional output folder for true/false/miss plots.",
     )
     parser.add_argument(
         "--alpha-threshold",
@@ -200,6 +200,36 @@ def to_int_or_none(value: object) -> int | None:
     return int(round(number))
 
 
+def safe_divide(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def summarize_metrics(true_count: int, false_count: int, miss_count: int) -> dict[str, float | None]:
+    precision = safe_divide(true_count, true_count + false_count)
+    accuracy = safe_divide(true_count, true_count + false_count + miss_count)
+    recall = safe_divide(true_count, true_count + miss_count)
+
+    f1_score: float | None = None
+    if precision is not None and recall is not None:
+        denominator = precision + recall
+        f1_score = 0.0 if denominator == 0 else (2.0 * precision * recall / denominator)
+
+    return {
+        "precision": precision,
+        "accuracy": accuracy,
+        "recall": recall,
+        "f1_score": f1_score,
+    }
+
+
+def format_metric(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.6f}"
+
+
 def compute_band_powers_and_ratios_fft(
     signal: np.ndarray,
     fs: float,
@@ -336,7 +366,7 @@ def compare_seconds(
             result_rows.append(
                 build_classified_row(
                     miss_second,
-                    "miss_",
+                    "miss",
                     alpha_amplitude,
                     alpha_peak,
                     power_segments,
@@ -374,7 +404,7 @@ def compare_seconds(
         result_rows.append(
             build_classified_row(
                 miss_second,
-                "miss_",
+                "miss",
                 alpha_amplitude,
                 alpha_peak,
                 power_segments,
@@ -514,7 +544,7 @@ def export_classified_plots(
             plotted_true += 1
         elif label == "false":
             plotted_false += 1
-        elif label == "miss_":
+        elif label == "miss":
             plotted_miss += 1
 
     return plotted_true, plotted_false, plotted_miss, warnings
@@ -558,6 +588,7 @@ def main() -> int:
         power_segments,
         alpha_threshold=float(args.alpha_threshold),
     )
+    metrics = summarize_metrics(true_count, false_count, miss_count)
 
     plotted_true, plotted_false, plotted_miss, warnings = export_classified_plots(
         result_rows,
@@ -580,11 +611,15 @@ def main() -> int:
     print(f"Total seconds: {len(power_segments)}")
     print(f"true: {true_count}")
     print(f"false: {false_count}")
-    print(f"miss_: {miss_count}")
+    print(f"miss: {miss_count}")
+    print(f"precision: {format_metric(metrics['precision'])}")
+    print(f"accuracy: {format_metric(metrics['accuracy'])}")
+    print(f"recall: {format_metric(metrics['recall'])}")
+    print(f"f1-score: {format_metric(metrics['f1_score'])}")
     print(f"Plot dir: {plot_dir}")
     print(f"Saved true plots: {plotted_true}")
     print(f"Saved false plots: {plotted_false}")
-    print(f"Saved miss_ plots: {plotted_miss}")
+    print(f"Saved miss plots: {plotted_miss}")
 
     if warnings:
         print("--- Plot warnings ---")
