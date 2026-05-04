@@ -346,7 +346,8 @@ def compare_seconds(
         amplitude_value = float(alpha_amplitude[index])
         if not np.isfinite(peak_value) or not np.isfinite(amplitude_value):
             continue
-        if second in eye_dat_seconds:
+        #if second in eye_dat_seconds:
+        if second in eye_dat_seconds or (second - 1 in eye_dat_seconds and second + 1 in eye_dat_seconds):
             continue
         if int(round(peak_value)) == 1 and amplitude_value > float(alpha_threshold):
             predicted_seconds.append(second)
@@ -505,7 +506,7 @@ def export_classified_plots(
     plotted_miss = 0
     warnings: list[str] = []
 
-    for label in ("true", "false", "miss_"):
+    for label in ("true", "false", "miss"):
         (output_dir / label).mkdir(parents=True, exist_ok=True)
 
     for row in result_rows:
