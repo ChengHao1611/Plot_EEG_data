@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 import pyedflib
+from scipy.signal import butter, sosfiltfilt
 
 from alpha_detection_paths import default_plot_dir, normalize_user_path, resolve_input_paths
 from alpha_detection_plotting import export_classified_plots
@@ -39,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         "--nfft-pow2",
         action="store_true",
         help="Use FFT length as the next power of 2 >= fs. Default uses nfft=fs.",
+    )
+    parser.add_argument(
+        "--lowpass-30",
+        action="store_true",
+        help="Apply a zero-phase 30 Hz low-pass filter before FFT and plotting.",
     )
     parser.add_argument("--theta-low", type=float, default=4.0, help="Theta band low cutoff (Hz)")
     parser.add_argument("--theta-high", type=float, default=7.8, help="Theta band high cutoff (Hz)")
@@ -120,6 +126,28 @@ def next_power_of_2(n: int) -> int:
     if n <= 1:
         return 1
     return 1 << (n - 1).bit_length()
+
+
+def apply_lowpass_filter_30(signal: np.ndarray, fs: float, *, order: int = 4) -> np.ndarray:
+    if fs <= 0:
+        raise ValueError(f"Invalid sample rate for filtering: {fs}")
+
+    nyquist = float(fs) / 2.0
+    cutoff = 30.0
+    if cutoff >= nyquist:
+        raise ValueError(
+            f"Cannot apply 30 Hz low-pass filter when Nyquist is {nyquist:.6f} Hz. "
+            f"Sample rate must be greater than 60 Hz."
+        )
+
+    sos = butter(
+        int(order),
+        float(cutoff),
+        btype="lowpass",
+        fs=float(fs),
+        output="sos",
+    )
+    return sosfiltfilt(sos, np.asarray(signal, dtype=float))
 
 
 def safe_divide(numerator: int, denominator: int) -> float | None:
@@ -350,6 +378,8 @@ def main() -> int:
     plot_dir = normalize_user_path(args.plot_dir) if args.plot_dir else default_plot_dir(folder, prefix)
 
     signal, fs = load_channel_signal(edf_path, args.channel)
+    if bool(args.lowpass_30):
+        signal = apply_lowpass_filter_30(signal, fs)
     window = int(round(fs))
     if window <= 0:
         raise ValueError(f"Invalid sample rate: {fs}")
@@ -396,6 +426,7 @@ def main() -> int:
     print(f"Eye DAT: {eye_dat_path if eye_dat_path else 'None'}")
     print(f"Channel: {args.channel}")
     print(f"fs: {fs}")
+    print(f"lowpass_30: {bool(args.lowpass_30)}")
     print(f"nfft: {nfft_value}")
     print(f"Total seconds: {len(power_segments)}")
     print(f"true: {true_count}")
