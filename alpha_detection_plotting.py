@@ -9,6 +9,8 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+MIN_PLOT_FREQ_HZ = 2.0
+
 
 def to_float_or_none(value: object) -> float | None:
     if not isinstance(value, (int, float, np.floating, np.integer)):
@@ -62,7 +64,7 @@ def save_class_plot(
 
     spectrum_mask = (
         np.isfinite(freqs)
-        & (freqs >= 0.0)
+        & (freqs >= float(MIN_PLOT_FREQ_HZ))
         & (freqs <= float(max_plot_freq))
     )
     power_masked = power_segment[spectrum_mask] if power_segment.size == freqs.size else np.array([], dtype=float)
@@ -72,10 +74,10 @@ def save_class_plot(
 
     axes[0].plot(freqs_masked, power_masked, color="#1f77b4", linewidth=1.0)
     axes[0].axvspan(alpha_low, alpha_high, color="#f4d35e", alpha=0.25)
-    axes[0].set_xlim(0.0, float(max_plot_freq))
+    axes[0].set_xlim(float(MIN_PLOT_FREQ_HZ), float(max_plot_freq))
     axes[0].set_xlabel("Frequency (Hz)")
     axes[0].set_ylabel("Amplitude")
-    axes[0].set_title("Frequency Domain")
+    axes[0].set_title(f"Frequency Domain ({int(MIN_PLOT_FREQ_HZ)}-{int(round(float(max_plot_freq)))} Hz)")
     axes[0].grid(True, alpha=0.2)
 
     axes[1].plot(times, segment, color="#222222", linewidth=0.9)

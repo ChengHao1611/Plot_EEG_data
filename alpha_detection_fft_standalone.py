@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-plot-freq",
         type=float,
-        default=30.0,
+        default=100.0,
         help="Maximum frequency shown in the spectrum plot (Hz).",
     )
     return parser.parse_args()
