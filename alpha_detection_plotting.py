@@ -9,7 +9,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-MIN_PLOT_FREQ_HZ = 2.0
+MIN_PLOT_FREQ_HZ = 1.9
 
 
 def to_float_or_none(value: object) -> float | None:
@@ -59,6 +59,7 @@ def save_class_plot(
     max_plot_freq: float,
     alpha_amplitude: float | None,
     alpha_peak: int | None,
+    peak_freq: float | None,
 ) -> None:
     times, segment = get_second_segment(signal, fs, second)
 
@@ -74,10 +75,20 @@ def save_class_plot(
 
     axes[0].plot(freqs_masked, power_masked, color="#1f77b4", linewidth=1.0)
     axes[0].axvspan(alpha_low, alpha_high, color="#f4d35e", alpha=0.25)
+    if peak_freq is not None and alpha_amplitude is not None:
+        if float(MIN_PLOT_FREQ_HZ) <= float(peak_freq) <= float(max_plot_freq):
+            axes[0].axvline(float(peak_freq), color="#d62828", linestyle="--", linewidth=1.2, alpha=0.9)
+            axes[0].scatter(
+                [float(peak_freq)],
+                [float(alpha_amplitude)],
+                color="#d62828",
+                s=28,
+                zorder=4,
+            )
     axes[0].set_xlim(float(MIN_PLOT_FREQ_HZ), float(max_plot_freq))
     axes[0].set_xlabel("Frequency (Hz)")
     axes[0].set_ylabel("Amplitude")
-    axes[0].set_title(f"Frequency Domain ({int(MIN_PLOT_FREQ_HZ)}-{int(round(float(max_plot_freq)))} Hz)")
+    axes[0].set_title(f"Frequency Domain ({MIN_PLOT_FREQ_HZ:.1f}-{float(max_plot_freq):.0f} Hz)")
     axes[0].grid(True, alpha=0.2)
 
     axes[1].plot(times, segment, color="#222222", linewidth=0.9)
@@ -89,8 +100,12 @@ def save_class_plot(
 
     amplitude_text = "NA" if alpha_amplitude is None else f"{alpha_amplitude:.6f}"
     peak_text = "NA" if alpha_peak is None else str(alpha_peak)
+    peak_freq_text = "NA" if peak_freq is None else f"{peak_freq:.6f}"
     fig.suptitle(
-        f"{label} | second {second}\nalpha_amplitude={amplitude_text} alpha_peak={peak_text}",
+        (
+            f"{label} | second {second}\n"
+            f"alpha_amplitude={amplitude_text} alpha_peak={peak_text} peak_freq={peak_freq_text}Hz"
+        ),
         fontsize=13,
     )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95))
@@ -147,6 +162,7 @@ def export_classified_plots(
                 max_plot_freq=float(max_plot_freq),
                 alpha_amplitude=to_float_or_none(row.get("alpha_amplitude")),
                 alpha_peak=to_int_or_none(row.get("alpha_peak")),
+                peak_freq=to_float_or_none(row.get("peak_freq")),
             )
         except Exception as exc:
             warnings.append(f"Skipped second {second} ({label}): {exc}")

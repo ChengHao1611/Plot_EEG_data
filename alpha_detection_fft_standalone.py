@@ -143,7 +143,7 @@ def apply_highpass_filter_1(signal: np.ndarray, fs: float, *, order: int = 4) ->
         raise ValueError(f"Invalid sample rate for filtering: {fs}")
 
     nyquist = float(fs) / 2.0
-    cutoff = 1.0
+    cutoff = 0.5
     if cutoff >= nyquist:
         raise ValueError(
             f"Cannot apply 1 Hz high-pass filter when Nyquist is {nyquist:.6f} Hz. "
@@ -165,7 +165,7 @@ def apply_lowpass_filter_30(signal: np.ndarray, fs: float, *, order: int = 4) ->
         raise ValueError(f"Invalid sample rate for filtering: {fs}")
 
     nyquist = float(fs) / 2.0
-    cutoff = 30.0
+    cutoff = 50.0
     if cutoff >= nyquist:
         raise ValueError(
             f"Cannot apply 30 Hz low-pass filter when Nyquist is {nyquist:.6f} Hz. "
@@ -229,15 +229,15 @@ def compute_band_powers_and_ratios_fft(
     peak_low: float,
     peak_high: float,
     nfft: int | None = None,
-) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[np.ndarray]]:
     del theta_low, theta_high, beta_low, beta_high
 
     if signal.size == 0 or fs <= 0:
-        return np.array([], dtype=float), np.array([], dtype=float), []
+        return np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), []
 
     win = int(round(fs))
     if win <= 0:
-        return np.array([], dtype=float), np.array([], dtype=float), []
+        return np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), []
 
     nfft_final = win if nfft is None else int(nfft)
     if nfft_final < win:
@@ -245,15 +245,16 @@ def compute_band_powers_and_ratios_fft(
 
     n_secs = int(signal.size // win)
     if n_secs == 0:
-        return np.array([], dtype=float), np.array([], dtype=float), []
+        return np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), []
 
     freqs = np.fft.rfftfreq(nfft_final, d=1.0 / fs)
     peak_mask = (freqs >= peak_low) & (freqs <= peak_high)
     if not np.any(peak_mask):
-        return np.array([], dtype=float), np.array([], dtype=float), []
+        return np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), []
 
     alpha_amplitude = np.full(n_secs, np.nan, dtype=float)
     alpha_peak = np.full(n_secs, np.nan, dtype=float)
+    peak_freqs = np.full(n_secs, np.nan, dtype=float)
     power_segments: list[np.ndarray] = []
 
     for second_index in range(n_secs):
@@ -275,8 +276,9 @@ def compute_band_powers_and_ratios_fft(
 
         alpha_amplitude[second_index] = float(power[peak_abs_index])
         alpha_peak[second_index] = 1.0 if alpha_low <= peak_freq < alpha_high else 0.0
+        peak_freqs[second_index] = peak_freq
 
-    return alpha_amplitude, alpha_peak, power_segments
+    return alpha_amplitude, alpha_peak, peak_freqs, power_segments
 
 
 def build_classified_row(
@@ -284,11 +286,13 @@ def build_classified_row(
     label: str,
     alpha_amplitude: np.ndarray,
     alpha_peak: np.ndarray,
+    peak_freqs: np.ndarray,
     power_segments: Sequence[np.ndarray],
 ) -> dict[str, object]:
     index = second - 1
     amplitude_value: float | None = None
     peak_value: int | None = None
+    peak_freq_value: float | None = None
     power_value = np.array([], dtype=float)
 
     if 0 <= index < alpha_amplitude.size:
@@ -301,6 +305,11 @@ def build_classified_row(
         if np.isfinite(raw_peak):
             peak_value = int(round(raw_peak))
 
+    if 0 <= index < peak_freqs.size:
+        raw_peak_freq = float(peak_freqs[index])
+        if np.isfinite(raw_peak_freq):
+            peak_freq_value = raw_peak_freq
+
     if 0 <= index < len(power_segments):
         power_value = np.asarray(power_segments[index], dtype=float)
 
@@ -309,6 +318,7 @@ def build_classified_row(
         "label": label,
         "alpha_amplitude": amplitude_value,
         "alpha_peak": peak_value,
+        "peak_freq": peak_freq_value,
         "power": power_value,
     }
 
@@ -318,6 +328,7 @@ def compare_seconds(
     eye_dat_path: Path | None,
     alpha_amplitude: np.ndarray,
     alpha_peak: np.ndarray,
+    peak_freqs: np.ndarray,
     power_segments: Sequence[np.ndarray],
     *,
     alpha_threshold: float,
@@ -356,6 +367,7 @@ def compare_seconds(
                     "miss",
                     alpha_amplitude,
                     alpha_peak,
+                    peak_freqs,
                     power_segments,
                 )
             )
@@ -369,6 +381,7 @@ def compare_seconds(
                     "true",
                     alpha_amplitude,
                     alpha_peak,
+                    peak_freqs,
                     power_segments,
                 )
             )
@@ -381,6 +394,7 @@ def compare_seconds(
                     "false",
                     alpha_amplitude,
                     alpha_peak,
+                    peak_freqs,
                     power_segments,
                 )
             )
@@ -394,6 +408,7 @@ def compare_seconds(
                 "miss",
                 alpha_amplitude,
                 alpha_peak,
+                peak_freqs,
                 power_segments,
             )
         )
@@ -428,7 +443,7 @@ def main() -> int:
         raise ValueError(f"Invalid sample rate: {fs}")
 
     nfft_value = next_power_of_2(window) if bool(args.nfft_pow2) else window
-    alpha_amplitude, alpha_peak, power_segments = compute_band_powers_and_ratios_fft(
+    alpha_amplitude, alpha_peak, peak_freqs, power_segments = compute_band_powers_and_ratios_fft(
         signal,
         fs,
         theta_low=args.theta_low,
@@ -447,6 +462,7 @@ def main() -> int:
         eye_dat_path,
         alpha_amplitude,
         alpha_peak,
+        peak_freqs,
         power_segments,
         alpha_threshold=float(args.alpha_threshold),
     )
