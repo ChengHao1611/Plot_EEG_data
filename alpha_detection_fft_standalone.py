@@ -47,9 +47,14 @@ def parse_args() -> argparse.Namespace:
         help="Use FFT length as the next power of 2 >= fs. Default uses nfft=fs.",
     )
     parser.add_argument(
+        "--highpass-1",
+        action="store_true",
+        help="Apply a zero-phase 1 Hz high-pass filter before FFT and plotting.",
+    )
+    parser.add_argument(
         "--lowpass-30",
         action="store_true",
-        help="Apply a zero-phase 30 Hz low-pass filter before FFT and plotting.",
+        help="Apply a zero-phase 30 Hz low-pass filter before FFT and plotting. If both filters are enabled, high-pass runs first.",
     )
     parser.add_argument("--theta-low", type=float, default=4.0, help="Theta band low cutoff (Hz)")
     parser.add_argument("--theta-high", type=float, default=7.8, help="Theta band high cutoff (Hz)")
@@ -131,6 +136,28 @@ def next_power_of_2(n: int) -> int:
     if n <= 1:
         return 1
     return 1 << (n - 1).bit_length()
+
+
+def apply_highpass_filter_1(signal: np.ndarray, fs: float, *, order: int = 4) -> np.ndarray:
+    if fs <= 0:
+        raise ValueError(f"Invalid sample rate for filtering: {fs}")
+
+    nyquist = float(fs) / 2.0
+    cutoff = 1.0
+    if cutoff >= nyquist:
+        raise ValueError(
+            f"Cannot apply 1 Hz high-pass filter when Nyquist is {nyquist:.6f} Hz. "
+            f"Sample rate must be greater than 2 Hz."
+        )
+
+    sos = butter(
+        int(order),
+        float(cutoff),
+        btype="highpass",
+        fs=float(fs),
+        output="sos",
+    )
+    return sosfiltfilt(sos, np.asarray(signal, dtype=float))
 
 
 def apply_lowpass_filter_30(signal: np.ndarray, fs: float, *, order: int = 4) -> np.ndarray:
@@ -392,6 +419,8 @@ def main() -> int:
     )
 
     signal, fs = load_channel_signal(edf_path, args.channel)
+    if bool(args.highpass_1):
+        signal = apply_highpass_filter_1(signal, fs)
     if bool(args.lowpass_30):
         signal = apply_lowpass_filter_30(signal, fs)
     window = int(round(fs))
@@ -444,6 +473,7 @@ def main() -> int:
     print(f"Eye DAT: {eye_dat_path if eye_dat_path else 'None'}")
     print(f"Channel: {args.channel}")
     print(f"fs: {fs}")
+    print(f"highpass_1: {bool(args.highpass_1)}")
     print(f"lowpass_30: {bool(args.lowpass_30)}")
     print(f"nfft: {nfft_value}")
     print(f"Total seconds: {len(power_segments)}")
