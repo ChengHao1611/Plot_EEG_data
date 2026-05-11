@@ -9,6 +9,7 @@ import numpy as np
 import pyedflib
 from scipy.signal import butter, sosfiltfilt
 
+from alpha_detection_distribution import save_alpha_energy_normal_distribution
 from alpha_detection_paths import default_plot_dir, normalize_user_path, resolve_input_paths
 from alpha_detection_plotting import export_classified_plots
 
@@ -29,6 +30,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-dir",
         help="Optional output folder for true/false/miss plots.",
+    )
+    parser.add_argument(
+        "--normal-dist-output",
+        help="Optional PNG path for the (true+miss) vs false alpha energy normal distribution graph.",
     )
     parser.add_argument(
         "--alpha-threshold",
@@ -178,6 +183,10 @@ def format_metric(value: float | None) -> str:
     if value is None:
         return "N/A"
     return f"{value:.6f}"
+
+
+def default_normal_dist_output(plot_dir: Path, prefix: str) -> Path:
+    return plot_dir / f"{prefix}_alpha_energy_normal_distribution.png"
 
 
 def compute_band_powers_and_ratios_fft(
@@ -376,6 +385,11 @@ def main() -> int:
     input_path = normalize_user_path(raw_input_path)
     folder, edf_path, prefix, alpha_dat_path, eye_dat_path = resolve_input_paths(input_path)
     plot_dir = normalize_user_path(args.plot_dir) if args.plot_dir else default_plot_dir(folder, prefix)
+    normal_dist_output = (
+        normalize_user_path(args.normal_dist_output)
+        if args.normal_dist_output
+        else default_normal_dist_output(plot_dir, prefix)
+    )
 
     signal, fs = load_channel_signal(edf_path, args.channel)
     if bool(args.lowpass_30):
@@ -419,6 +433,10 @@ def main() -> int:
         alpha_high=float(args.alpha_high),
         max_plot_freq=float(args.max_plot_freq),
     )
+    normal_true_miss_count, normal_false_count = save_alpha_energy_normal_distribution(
+        normal_dist_output,
+        result_rows,
+    )
 
     print(f"Folder: {folder}")
     print(f"EDF: {edf_path}")
@@ -437,6 +455,9 @@ def main() -> int:
     print(f"recall: {format_metric(metrics['recall'])}")
     print(f"f1-score: {format_metric(metrics['f1_score'])}")
     print(f"Plot dir: {plot_dir}")
+    print(f"Normal dist graph: {normal_dist_output}")
+    print(f"Normal dist true+miss count: {normal_true_miss_count}")
+    print(f"Normal dist false count: {normal_false_count}")
     print(f"Saved true plots: {plotted_true}")
     print(f"Saved false plots: {plotted_false}")
     print(f"Saved miss plots: {plotted_miss}")
