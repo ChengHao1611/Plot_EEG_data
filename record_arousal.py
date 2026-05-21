@@ -23,9 +23,12 @@ def custom_eye_movement_peaks(signal, sfreq, height_thresh, prominence_thresh):
     # 將秒數轉換為點數 (Ticks)
     window_ticks = int(sfreq * 0.15) 
     max_width_ticks = int(sfreq * 0.3)
+    current_window_max = 0
     
     # 為了安全檢查，前後留出一個窗口的邊界
     for i in range(window_ticks, len(signal) - window_ticks):
+        if i < current_window_max:
+            continue
         current_val = signal[i]
         
         # ensure that the current point is a local maximum
@@ -44,9 +47,11 @@ def custom_eye_movement_peaks(signal, sfreq, height_thresh, prominence_thresh):
         # 撈出左邊與右邊窗口內的最低點
         left_window = signal[i - window_ticks : i]
         right_window = signal[i : i + window_ticks]
-        
         left_min = np.min(left_window)
         right_min = np.min(right_window)
+        left_min_idx = i - window_ticks + np.argmin(left_window)
+        right_min_idx = i + np.argmin(right_window)
+        current_window_max = np.max(signal[left_min_idx : right_min_idx + 1])
         
         # 計算左爬升與右跌落
         left_rise = current_val - left_min
