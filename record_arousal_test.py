@@ -17,7 +17,10 @@ import matplotlib.pyplot as plt
 import mne
 import numpy as np
 
-from eye_movement_distribution import save_eye_movement_peak_distribution
+from eye_movement_distribution import (
+    compute_peak_to_shoulder_amplitude,
+    save_eye_movement_peak_distribution,
+)
 
 
 @dataclass
@@ -739,13 +742,29 @@ def main() -> int:
     comparison = compare_seconds(predicted_seconds, manual_seconds, total_seconds)
     events = build_comparison_events(comparison, detection)
     positive_amplitudes = [
-        float(event.diagnostic.current_val)
+        amplitude
         for event in events
+        for amplitude in [
+            compute_peak_to_shoulder_amplitude(
+                event.diagnostic.current_val,
+                event.diagnostic.left_min,
+                event.diagnostic.right_min,
+            )
+        ]
+        if amplitude is not None
         if event.category in {"true", "miss"}
     ]
     false_amplitudes = [
-        float(event.diagnostic.current_val)
+        amplitude
         for event in events
+        for amplitude in [
+            compute_peak_to_shoulder_amplitude(
+                event.diagnostic.current_val,
+                event.diagnostic.left_min,
+                event.diagnostic.right_min,
+            )
+        ]
+        if amplitude is not None
         if event.category == "false"
     ]
     positive_count, false_count = save_eye_movement_peak_distribution(
