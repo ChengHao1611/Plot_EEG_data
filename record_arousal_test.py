@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import mne
 import numpy as np
 
+from eye_movement_distribution import save_eye_movement_peak_distribution
+
 
 @dataclass
 class CandidateDiagnostic:
@@ -232,10 +234,13 @@ def build_candidate_diagnostic(
 
     prev_value = float(signal[peak_index - 1]) if peak_index > 0 else current_val
     next_value = float(signal[peak_index + 1]) if peak_index + 1 < len(signal) else current_val
-    is_local_max = current_val > prev_value and current_val > next_value
+    current_window = signal[left_start:right_end]
+    max_index = left_start + int(np.argmax(current_window))
+    is_local_max = (peak_index == max_index)
     height_ok = current_val >= float(height_thresh)
     prominence_ok = left_rise >= float(prominence_thresh) and right_fall >= float(prominence_thresh)
     floor_ok = start_value <= floor_level and end_value <= floor_level
+    floor_ok = True
     passes = is_local_max and height_ok and prominence_ok and floor_ok
 
     rejection_reasons: list[str] = []
@@ -575,7 +580,6 @@ def save_metrics_report(
         f"miss ({metrics['miss_count']}): {metrics['miss_seconds']}",
         f"true_negative: {metrics['true_negative']}",
         f"accuracy: {format_metric(metrics['accuracy'])}",
-        f"event_accuracy: {format_metric(metrics['event_accuracy'])}",
         f"precision: {format_metric(metrics['precision'])}",
         f"recall: {format_metric(metrics['recall'])}",
     ]
@@ -596,7 +600,8 @@ def detect_eye_movements(
     picked_raw = raw.copy().pick(target_channels[:2])
     data, times = picked_raw.get_data(), picked_raw.times
     sfreq = float(picked_raw.info["sfreq"])
-    combined_signal = (np.abs(data[0]) + np.abs(data[1])) / 2.0
+    #combined_signal = (np.abs(data[0]) + np.abs(data[1])) / 2.0
+    combined_signal = data[1]
 
     median = float(np.median(combined_signal))
     mad = float(np.median(np.abs(combined_signal - median)))
@@ -645,9 +650,9 @@ def build_comparison_events(
     events: list[ComparisonEvent] = []
 
     for category_key, category_name in (
-        ("true_seconds", "true"),
         ("false_seconds", "false"),
         ("miss_seconds", "miss"),
+        ("true_seconds", "true"),
     ):
         for second in comparison[category_key]:
             second_int = int(second)
@@ -708,6 +713,7 @@ def main() -> int:
     )
     auto_dat_path = output_dir / f"{edf_path.stem}_auto_eye_movement.dat"
     event_summary_csv = output_dir / "event_summary.csv"
+    distribution_output = output_dir / "eye_movement_peak_distribution.png"
     metrics_report_path = output_dir / "metrics_report.txt"
 
     raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
@@ -732,6 +738,21 @@ def main() -> int:
     manual_seconds, dropped_manual_seconds = clamp_seconds(manual_seconds_raw, total_seconds)
     comparison = compare_seconds(predicted_seconds, manual_seconds, total_seconds)
     events = build_comparison_events(comparison, detection)
+    positive_amplitudes = [
+        float(event.diagnostic.current_val)
+        for event in events
+        if event.category in {"true", "miss"}
+    ]
+    false_amplitudes = [
+        float(event.diagnostic.current_val)
+        for event in events
+        if event.category == "false"
+    ]
+    positive_count, false_count = save_eye_movement_peak_distribution(
+        distribution_output,
+        positive_amplitudes,
+        false_amplitudes,
+    )
 
     for event in events:
         plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
@@ -763,11 +784,14 @@ def main() -> int:
     print(f"Output dir: {output_dir}")
     print(f"Auto DAT: {auto_dat_path}")
     print(f"Event summary CSV: {event_summary_csv}")
+    print(f"Distribution graph: {distribution_output}")
     print(f"Metrics report: {metrics_report_path}")
     print(f"Channels used: {target_channels[:2]}")
     print(f"Total seconds: {total_seconds}")
     print(f"Predicted seconds: {len(predicted_seconds)}")
     print(f"Manual seconds: {len(manual_seconds)}")
+    print(f"(true + miss) amplitude count: {positive_count}")
+    print(f"false amplitude count: {false_count}")
     print(f"true: {comparison['true_count']}")
     print(f"false: {comparison['false_count']}")
     print(f"miss: {comparison['miss_count']}")
