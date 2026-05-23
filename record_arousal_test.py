@@ -96,6 +96,11 @@ def get_args() -> argparse.Namespace:
         default=0.00006,
         help="Prominence threshold used by the custom detector.",
     )
+    parser.add_argument(
+        "--distribution",
+        action="store_true",
+        help="Generate the eye-movement amplitude distribution graph.",
+    )
     return parser.parse_args()
 
 
@@ -741,37 +746,40 @@ def main() -> int:
     manual_seconds, dropped_manual_seconds = clamp_seconds(manual_seconds_raw, total_seconds)
     comparison = compare_seconds(predicted_seconds, manual_seconds, total_seconds)
     events = build_comparison_events(comparison, detection)
-    positive_amplitudes = [
-        amplitude
-        for event in events
-        for amplitude in [
-            compute_peak_to_shoulder_amplitude(
-                event.diagnostic.current_val,
-                event.diagnostic.left_min,
-                event.diagnostic.right_min,
-            )
+    positive_count: int | None = None
+    false_count: int | None = None
+    if bool(args.distribution):
+        positive_amplitudes = [
+            amplitude
+            for event in events
+            for amplitude in [
+                compute_peak_to_shoulder_amplitude(
+                    event.diagnostic.current_val,
+                    event.diagnostic.left_min,
+                    event.diagnostic.right_min,
+                )
+            ]
+            if amplitude is not None
+            if event.category in {"true", "miss"}
         ]
-        if amplitude is not None
-        if event.category in {"true", "miss"}
-    ]
-    false_amplitudes = [
-        amplitude
-        for event in events
-        for amplitude in [
-            compute_peak_to_shoulder_amplitude(
-                event.diagnostic.current_val,
-                event.diagnostic.left_min,
-                event.diagnostic.right_min,
-            )
+        false_amplitudes = [
+            amplitude
+            for event in events
+            for amplitude in [
+                compute_peak_to_shoulder_amplitude(
+                    event.diagnostic.current_val,
+                    event.diagnostic.left_min,
+                    event.diagnostic.right_min,
+                )
+            ]
+            if amplitude is not None
+            if event.category == "false"
         ]
-        if amplitude is not None
-        if event.category == "false"
-    ]
-    positive_count, false_count = save_eye_movement_peak_distribution(
-        distribution_output,
-        positive_amplitudes,
-        false_amplitudes,
-    )
+        positive_count, false_count = save_eye_movement_peak_distribution(
+            distribution_output,
+            positive_amplitudes,
+            false_amplitudes,
+        )
 
     for event in events:
         plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
@@ -803,14 +811,15 @@ def main() -> int:
     print(f"Output dir: {output_dir}")
     print(f"Auto DAT: {auto_dat_path}")
     print(f"Event summary CSV: {event_summary_csv}")
-    print(f"Distribution graph: {distribution_output}")
     print(f"Metrics report: {metrics_report_path}")
     print(f"Channels used: {target_channels[:2]}")
     print(f"Total seconds: {total_seconds}")
     print(f"Predicted seconds: {len(predicted_seconds)}")
     print(f"Manual seconds: {len(manual_seconds)}")
-    print(f"(true + miss) amplitude count: {positive_count}")
-    print(f"false amplitude count: {false_count}")
+    if bool(args.distribution):
+        print(f"Distribution graph: {distribution_output}")
+        print(f"(true + miss) amplitude count: {positive_count}")
+        print(f"false amplitude count: {false_count}")
     print(f"true: {comparison['true_count']}")
     print(f"false: {comparison['false_count']}")
     print(f"miss: {comparison['miss_count']}")
