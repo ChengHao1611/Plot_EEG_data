@@ -22,6 +22,8 @@ from eye_movement_distribution import (
     save_eye_movement_peak_distribution,
 )
 
+MIN_PEAK_TO_SHOULDER_DELTA = 0.00007
+#MIN_PEAK_TO_SHOULDER_DELTA = 0.00000
 
 @dataclass
 class CandidateDiagnostic:
@@ -35,6 +37,7 @@ class CandidateDiagnostic:
     right_min: float
     left_rise: float
     right_fall: float
+    peak_to_shoulder_delta: float
     start_idx: int
     end_idx: int
     start_value: float
@@ -47,6 +50,7 @@ class CandidateDiagnostic:
     is_local_max: bool
     height_ok: bool
     prominence_ok: bool
+    peak_to_shoulder_ok: bool
     floor_ok: bool
     passes: bool
     source: str
@@ -230,6 +234,9 @@ def build_candidate_diagnostic(
     right_min = float(signal[right_min_idx])
     left_rise = current_val - left_min
     right_fall = current_val - right_min
+    peak_to_shoulder_delta = compute_peak_to_shoulder_amplitude(current_val, left_min, right_min)
+    if peak_to_shoulder_delta is None:
+        peak_to_shoulder_delta = float("-inf")
 
     start_idx = max(0, peak_index - broad_window_ticks)
     end_idx = min(len(signal), peak_index + broad_window_ticks)
@@ -247,9 +254,10 @@ def build_candidate_diagnostic(
     is_local_max = (peak_index == max_index)
     height_ok = current_val >= float(height_thresh)
     prominence_ok = left_rise >= float(prominence_thresh) and right_fall >= float(prominence_thresh)
+    peak_to_shoulder_ok = peak_to_shoulder_delta > float(MIN_PEAK_TO_SHOULDER_DELTA)
     floor_ok = start_value <= floor_level and end_value <= floor_level
     floor_ok = True
-    passes = is_local_max and height_ok and prominence_ok and floor_ok
+    passes = is_local_max and height_ok and prominence_ok and peak_to_shoulder_ok and floor_ok
 
     rejection_reasons: list[str] = []
     if not is_local_max:
@@ -258,6 +266,8 @@ def build_candidate_diagnostic(
         rejection_reasons.append("below_height_threshold")
     if not prominence_ok:
         rejection_reasons.append("below_prominence_threshold")
+    if not peak_to_shoulder_ok:
+        rejection_reasons.append("below_peak_to_shoulder_threshold")
     if not floor_ok:
         rejection_reasons.append("floor_not_recovered")
 
@@ -272,6 +282,7 @@ def build_candidate_diagnostic(
         right_min=right_min,
         left_rise=float(left_rise),
         right_fall=float(right_fall),
+        peak_to_shoulder_delta=float(peak_to_shoulder_delta),
         start_idx=int(start_idx),
         end_idx=int(end_idx),
         start_value=start_value,
@@ -284,6 +295,7 @@ def build_candidate_diagnostic(
         is_local_max=bool(is_local_max),
         height_ok=bool(height_ok),
         prominence_ok=bool(prominence_ok),
+        peak_to_shoulder_ok=bool(peak_to_shoulder_ok),
         floor_ok=bool(floor_ok),
         passes=bool(passes),
         source=source,
@@ -485,11 +497,13 @@ def plot_event(
         f"peak_time={diagnostic.peak_time:.4f}s",
         f"left_rise={diagnostic.left_rise:.8f}",
         f"right_fall={diagnostic.right_fall:.8f}",
+        f"peak-max(min)={diagnostic.peak_to_shoulder_delta:.8f}",
         f"floor_level={diagnostic.floor_level:.8f}",
         f"signal[start_idx]={diagnostic.start_value:.8f} @ {diagnostic.start_idx}",
         f"signal[end_idx-1]={diagnostic.end_value:.8f} @ {diagnostic.end_idx - 1}",
         f"height_thresh={diagnostic.height_thresh:.8f}",
         f"prominence_thresh={diagnostic.prominence_thresh:.8f}",
+        f"peak_to_shoulder_thresh={MIN_PEAK_TO_SHOULDER_DELTA:.8f}",
         f"passes={diagnostic.passes}",
         f"source={diagnostic.source}",
     ]
@@ -535,6 +549,7 @@ def save_event_summary_csv(output_path: Path, events: list[ComparisonEvent]) -> 
         "right_min",
         "left_rise",
         "right_fall",
+        "peak_to_shoulder_delta",
         "start_idx",
         "end_idx",
         "start_value",
@@ -545,6 +560,7 @@ def save_event_summary_csv(output_path: Path, events: list[ComparisonEvent]) -> 
         "is_local_max",
         "height_ok",
         "prominence_ok",
+        "peak_to_shoulder_ok",
         "floor_ok",
         "passes",
         "source",
@@ -781,30 +797,30 @@ def main() -> int:
             false_amplitudes,
         )
 
-    for event in events:
-        plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
-        plot_event(
-            detection["signal"],
-            detection["times"],
-            event.diagnostic,
-            event.category,
-            plot_path,
-            float(args.plot_window_sec),
-        )
+    # for event in events:
+    #     plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
+    #     plot_event(
+    #         detection["signal"],
+    #         detection["times"],
+    #         event.diagnostic,
+    #         event.category,
+    #         plot_path,
+    #         float(args.plot_window_sec),
+    #     )
 
-    save_event_summary_csv(event_summary_csv, events)
-    save_metrics_report(
-        metrics_report_path,
-        edf_path=edf_path,
-        manual_dat_path=manual_dat_path,
-        auto_dat_path=auto_dat_path,
-        output_dir=output_dir,
-        total_seconds=total_seconds,
-        predicted_seconds=predicted_seconds,
-        manual_seconds=manual_seconds,
-        dropped_manual_seconds=dropped_manual_seconds,
-        metrics=comparison,
-    )
+    # save_event_summary_csv(event_summary_csv, events)
+    # save_metrics_report(
+    #     metrics_report_path,
+    #     edf_path=edf_path,
+    #     manual_dat_path=manual_dat_path,
+    #     auto_dat_path=auto_dat_path,
+    #     output_dir=output_dir,
+    #     total_seconds=total_seconds,
+    #     predicted_seconds=predicted_seconds,
+    #     manual_seconds=manual_seconds,
+    #     dropped_manual_seconds=dropped_manual_seconds,
+    #     metrics=comparison,
+    # )
 
     print(f"EDF: {edf_path}")
     print(f"Manual DAT: {manual_dat_path}")
