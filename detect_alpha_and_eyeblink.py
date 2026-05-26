@@ -3,6 +3,7 @@ import os
 import sys
 import mne
 from record_arousal import detect_eye_movements
+from record_alpha import detect_alpha
 
 DYNAMIC_PROMINENCE = 0.00006
 
@@ -22,7 +23,8 @@ if __name__ == "__main__":
         print(f"Error: The file '{file_path}' does not exist.")
         sys.exit(1)
     file_dir = os.path.dirname(file_path)
-    output_path = os.path.join(file_dir, "eyeblink.dat")
+    output_eyeblink_path = os.path.join(file_dir, "eyeblink.dat")
+    output_alpha_path = os.path.join(file_dir, "Alpha.dat")
     raw = mne.io.read_raw_edf(file_path, preload=True)
 
     all_channels = raw.ch_names
@@ -31,4 +33,5 @@ if __name__ == "__main__":
     if len(target_channels) < 2:
         print("找不到 FP1 或 FP2 通道")
     else:
-        detect_eye_movements(raw, target_channels, output_path)
+        detect_eye_movements(raw, target_channels, output_eyeblink_path)
+        detect_alpha(file_path, output_alpha_path, target_channels)
