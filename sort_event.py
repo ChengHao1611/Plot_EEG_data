@@ -112,7 +112,7 @@ class EEGBrowserGUI:
             master_df = master_df.merge(alpha_counts.rename('a_raw'), left_on='second', right_index=True, how='left').fillna(0)
             master_df = master_df.merge(eye_counts.rename('e_raw'), left_on='second', right_index=True, how='left').fillna(0)
             
-            master_df['alpha_sum'] = master_df['a_raw'].rolling(window=5, min_periods=1).sum()
+            master_df['alpha_sum'] = master_df['a_raw'].rolling(window=1, min_periods=1).sum()
             master_df['eye_sum'] = master_df['e_raw'].rolling(window=30, min_periods=1).sum()
 
             if mode == 1:
@@ -193,7 +193,7 @@ class EEGBrowserGUI:
         self.safe_update_status("正在生成狀態演變圖...")
         
         # 設定反應時間判定門檻
-        ALERT_THRESHOLD = 2.0
+        ALERT_THRESHOLD = 3.0
         FATIGUE_THRESHOLD = 7.0
         
         # 反應時間狀態判定
@@ -201,11 +201,14 @@ class EEGBrowserGUI:
             if pd.isna(t): return None
             if t < ALERT_THRESHOLD: return 0  # Alert
             if t < FATIGUE_THRESHOLD: return 1  # Fatigue
-            return 2  # Drowsy
+            return 1  # Drowsy
 
         # 演算法依據生理指標判斷狀態
         def calculate_all_pred_states(df):
             pred_results = []
+            eye_alarm_list = []
+            alpha_alarm_list = []
+
             max_e = 0
             pre_e = 0
             pre_a = 0
@@ -213,61 +216,52 @@ class EEGBrowserGUI:
             
             monitor_enabled = True # switch for fatigue monitoring, starts enabled
             INIT_BUFFER_SECONDS = 30
-            EYE_ALERT_MIN_THRESHOLD = 5
-            EYE_ALERT_RELATIVE_THRESHOLD = 0.75
-            EYE_RECOVERY_THRESHOLD = 0.5
+            EYE_ALERT_MIN_THRESHOLD = 7
+            RECOVERY_THRESHOLD = 10
+            # EYE_ALERT_RELATIVE_THRESHOLD = 0.75
+            # EYE_RECOVERY_THRESHOLD = 0.5
             
             for i, row in df.iterrows():
                 current_second = row['second']
                 a = row['alpha_sum']
                 e = row['eye_sum']
 
+                # warm-up period
                 if current_second < INIT_BUFFER_SECONDS:
                     pred_results.append(0)  # Alert during initial buffer period
+                    eye_alarm_list.append(0)
+                    alpha_alarm_list.append(0)
                     pre_e = e
                     pre_a = a
                     pre_state = pre_state
                     max_e = e  # 初始化 max_e 為第一秒的 eye_sum
                     continue
-
-                if pre_state == 2:
-                    if e > 0.1:
-                        state = 0
-                        monitor_enabled = True
-                        max_e = e
-                        pred_results.append(state)
-                        pre_state = state
-                        pre_e = e
-                        pre_a = a
-                        continue
-                    elif a > 0.1:
-                        state = 1
-                        pred_results.append(state)
-                        pre_state = state
-                        pre_e = e
-                        pre_a = a
-                        continue
                 
                 # check for recovery condition when monitor is disabled
                 if not monitor_enabled:
-                    if e >= 10 and e > pre_e:
-                        monitor_enabled = True  # 駕駛表現清醒，重新開啟監控開關
+                    if e >= RECOVERY_THRESHOLD and e > pre_e: # 
+                        monitor_enabled = True  
                 
                 # update max_e only when monitor is enabled, to track the new peak after recovery
                 if monitor_enabled and (e > pre_e):
                     # 這裡你提到的 e >= max_e / 2 也可以保留作為更新最高點的門檻
-                    if e >= (max_e * EYE_RECOVERY_THRESHOLD if max_e > 0 else 0):
+                    if e >= RECOVERY_THRESHOLD:
                         max_e = e
-                
+
+                current_eye_alarm = 0
+                current_alpha_alarm = 0
+
                 # alert only when monitor is enabled
                 if monitor_enabled:
-                    eye_alarm = (e < max_e * EYE_ALERT_RELATIVE_THRESHOLD) and (e > 0) if max_e > 0 else False
+                    eye_alarm = (e <= pre_e) and (e > 0) if max_e > 0 else False
                     alpha_alarm = (a > pre_a)
-                    
+                    current_eye_alarm = 1 if eye_alarm else 0                    
+                    current_alpha_alarm = 1 if alpha_alarm else 0
+
                     if e <= 0.1 and a <= 0.1:
-                        state = 2  # 睡著
+                        state = 1  # 2
                     elif (eye_alarm and alpha_alarm) or (e <= EYE_ALERT_MIN_THRESHOLD and e != max_e):
-                        state = 1  # 疲勞觸發
+                        state = 1  # fatigue
                         monitor_enabled = False  # 【關鍵】觸發後立刻關閉開關，進入鎖定
                     else:
                         state = 0  # 清醒
@@ -275,14 +269,47 @@ class EEGBrowserGUI:
                     # monitor disabled, maintain fatigue state unless clear recovery condition is met
                     state = 1
                     if e <= 0.1 and a <= 0.1: #until clear sleep condition is met
-                        state = 2
+                        state = 1 # 2
 
                 pred_results.append(state)
+                eye_alarm_list.append(current_eye_alarm)
+                alpha_alarm_list.append(current_alpha_alarm)
+
                 pre_e = e
                 pre_a = a
                 pre_state = state
                 
-            return pred_results
+            return pred_results, eye_alarm_list, alpha_alarm_list
+        
+        def export_to_excel(pred_df, df_main):
+            import openpyxl
+
+            react_mapping = df_main.dropna(subset=['react_time']).set_index('second')['react_time'].to_dict()
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Driving State Analysis Results"
+            ws.views.sheetView[0].showGridLines = True
+            headers = ["Second", "Eye_Sum", "Alpha_Sum", "React_time", "Eye_Alarm", 
+                       "Alpha_Alarm", "Pred_State"]
+            ws.append(headers)
+
+            for _, row in pred_df.iterrows():
+                sec = row['second']
+                react_t = react_mapping.get(sec, None)
+
+                ws.append([
+                    int(sec), 
+                    row['eye_sum'], 
+                    row['alpha_sum'], 
+                    react_t if react_t is not None else "", 
+                    int(row['eye_alarm']), 
+                    int(row['alpha_alarm']),
+                    int(row['pred_state'])
+                ])
+            excel_filename = "駕駛狀態分析結果.xlsx"
+            wb.save(excel_filename)
+            print(f"📊 Excel 檔案已成功儲存至: {excel_filename}")
 
         # tidy up state dataframe for plotting
         state_df = df_main[['second', 'react_time']].copy()
@@ -291,23 +318,29 @@ class EEGBrowserGUI:
 
         # calculate predicted states based on the master_df
         pred_df = master_df.copy()
-        pred_df['pred_state'] = calculate_all_pred_states(pred_df)
+        pred_df['pred_state'], pred_df['eye_alarm'], pred_df['alpha_alarm'] = calculate_all_pred_states(pred_df)
 
+        try:
+            export_to_excel(pred_df, df_main)
+        except Exception as e:
+            print(f"❌ 導出 Excel 失敗: {str(e)}")
+            
         def draw_mode_three():
             try:
                 plt.close('all') 
                 fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, 
                                                      gridspec_kw={'height_ratios': [2, 1]})
 
-                # 上圖
+                # The top cumulative indicators and react time plot
                 ax_twin = ax_top.twinx()
                 lns1 = ax_top.plot(master_df['second'], master_df['alpha_sum'], color='#7030A0', 
                                    label='Alpha 累積', alpha=0.6, linewidth=1)
                 lns2 = ax_top.plot(master_df['second'], master_df['eye_sum'], color='#ED7D31', 
                                    label='Eye 累積', alpha=0.6, linewidth=1)
                 
+                react_times = state_df['react_time'].clip(upper=10)
                 markerline, stemlines, baseline = ax_twin.stem(
-                    state_df['second'], state_df['react_time'],
+                    state_df['second'], react_times,
                     markerfmt='ko', linefmt='k-', basefmt=" ", label='反應時間'
                 )
                 plt.setp(markerline, markersize=4, zorder=5)
@@ -333,39 +366,34 @@ class EEGBrowserGUI:
                         ax_top.axvspan(sleep_start, target_df['second'].max(), color='#FADBD8', alpha=0.5, label=lbl, zorder=0)
 
 
-                ax_top.set_ylabel("生理指標累積量")
-                ax_twin.set_ylabel("反應時間 (秒)")
-                ax_top.set_title("駕駛狀態綜合演變分析 (峰值下降邏輯驗證)", fontsize=14, pad=15)
+                ax_top.set_ylabel("Total Accumulation")
+                ax_twin.set_ylabel("React Time (Seconds)")
+                ax_top.set_title("The Evolution of Driving States", fontsize=14, pad=15)
 
-                # get legend from ax_top (包含 Alpha 和 Eye 的線圖)
                 handles_top, labels_top = ax_top.get_legend_handles_labels()
-                # get legend from ax_twin (包含反應時間的 stem 圖)
                 handles_twin, labels_twin = ax_twin.get_legend_handles_labels()
-                # merge legends
                 ax_top.legend(handles_top + handles_twin, labels_top + labels_twin, 
                                loc='upper left', fontsize=9)
 
-                # 下圖
-                # 實際狀態
+                # the bottom state evolution step plot
                 ax_bot.step(state_df['second'], state_df['state_val'], where='post', 
                             color='#444444', linewidth=2, markersize=4, label='實際狀態 (React)', zorder=2)
 
-                # 預測狀態
+                # Predicted state step plot
                 ax_bot.step(pred_df['second'], pred_df['pred_state'], where='post', 
                             color='red', linewidth=1.5, alpha=0.7, 
-                            label='預測狀態 (e/a 邏輯)', zorder=3)
+                            label='Predicted State (e/a Logic)', zorder=3)
                 
-                ax_bot.set_yticks([0, 1, 2])
-                ax_bot.set_yticklabels(['Alert (清醒)', 'Fatigue (疲勞)', 'Drowsy (睡著)'], fontsize=9)
-                ax_bot.set_ylim(-0.5, 2.5)
-                ax_bot.set_ylabel("狀態判定")
-                ax_bot.set_xlabel("測試時間 (秒)")
+                ax_bot.set_yticks([0, 1])
+                ax_bot.set_yticklabels(['Alert (Awake)', 'Fatigue (Tired)'], fontsize=9)
+                ax_bot.set_ylim(-0.5, 1.5)
+                ax_bot.set_ylabel("State Classification")
+                ax_bot.set_xlabel("Test Time (Seconds)")
                 ax_bot.grid(axis='y', linestyle='--', alpha=0.5)
 
                 # 背景顏色
                 ax_bot.axhspan(-0.5, 0.5, facecolor='#C6EFCE', alpha=0.2)
                 ax_bot.axhspan(0.5, 1.5, facecolor='#FFEB9C', alpha=0.2)
-                ax_bot.axhspan(1.5, 2.5, facecolor='#FFC7CE', alpha=0.2)
                 ax_bot.legend(loc='upper left', fontsize=9)
 
                 plt.tight_layout()
