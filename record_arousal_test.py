@@ -40,18 +40,13 @@ class CandidateDiagnostic:
     peak_to_shoulder_delta: float
     start_idx: int
     end_idx: int
-    start_value: float
-    end_value: float
-    floor_level: float
     height_thresh: float
     prominence_thresh: float
     window_ticks: int
     broad_window_ticks: int
     is_local_max: bool
     height_ok: bool
-    prominence_ok: bool
     peak_to_shoulder_ok: bool
-    floor_ok: bool
     passes: bool
     source: str
     rejection_reasons: list[str]
@@ -243,33 +238,25 @@ def build_candidate_diagnostic(
     if end_idx <= start_idx:
         end_idx = min(len(signal), start_idx + 1)
 
-    floor_level = current_val - (float(prominence_thresh) * 0.7)
-    start_value = float(signal[start_idx])
-    end_value = float(signal[end_idx - 1])
-
-    prev_value = float(signal[peak_index - 1]) if peak_index > 0 else current_val
-    next_value = float(signal[peak_index + 1]) if peak_index + 1 < len(signal) else current_val
     current_window = signal[left_start:right_end]
     max_index = left_start + int(np.argmax(current_window))
     is_local_max = (peak_index == max_index)
     height_ok = current_val >= float(height_thresh)
-    prominence_ok = left_rise >= float(prominence_thresh) and right_fall >= float(prominence_thresh)
     peak_to_shoulder_ok = peak_to_shoulder_delta > float(MIN_PEAK_TO_SHOULDER_DELTA)
-    floor_ok = start_value <= floor_level and end_value <= floor_level
-    floor_ok = True
-    passes = is_local_max and height_ok and prominence_ok and peak_to_shoulder_ok and floor_ok
+
+    passes = (
+        is_local_max
+        and height_ok
+        and peak_to_shoulder_ok
+    )
 
     rejection_reasons: list[str] = []
     if not is_local_max:
         rejection_reasons.append("not_local_max")
     if not height_ok:
         rejection_reasons.append("below_height_threshold")
-    if not prominence_ok:
-        rejection_reasons.append("below_prominence_threshold")
     if not peak_to_shoulder_ok:
         rejection_reasons.append("below_peak_to_shoulder_threshold")
-    if not floor_ok:
-        rejection_reasons.append("floor_not_recovered")
 
     return CandidateDiagnostic(
         peak_index=int(peak_index),
@@ -285,18 +272,13 @@ def build_candidate_diagnostic(
         peak_to_shoulder_delta=float(peak_to_shoulder_delta),
         start_idx=int(start_idx),
         end_idx=int(end_idx),
-        start_value=start_value,
-        end_value=end_value,
-        floor_level=float(floor_level),
         height_thresh=float(height_thresh),
         prominence_thresh=float(prominence_thresh),
         window_ticks=int(window_ticks),
         broad_window_ticks=int(broad_window_ticks),
         is_local_max=bool(is_local_max),
         height_ok=bool(height_ok),
-        prominence_ok=bool(prominence_ok),
         peak_to_shoulder_ok=bool(peak_to_shoulder_ok),
-        floor_ok=bool(floor_ok),
         passes=bool(passes),
         source=source,
         rejection_reasons=rejection_reasons,
