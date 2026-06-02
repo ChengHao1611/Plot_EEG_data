@@ -433,29 +433,12 @@ def plot_event(
     peak_time = float(times[diagnostic.peak_index])
     left_time = float(times[diagnostic.left_min_idx])
     right_time = float(times[diagnostic.right_min_idx])
-    start_time_value = float(times[diagnostic.start_idx])
-    end_time_value = float(times[diagnostic.end_idx - 1])
+
 
     ax.scatter([peak_time], [diagnostic.current_val], color="red", s=40, zorder=5, label="peak")
     ax.scatter([left_time], [diagnostic.left_min], color="green", s=35, zorder=5, label="left_min")
     ax.scatter([right_time], [diagnostic.right_min], color="orange", s=35, zorder=5, label="right_min")
-    ax.scatter(
-        [start_time_value],
-        [diagnostic.start_value],
-        color="purple",
-        s=35,
-        zorder=5,
-        label="signal[start_idx]",
-    )
-    ax.scatter(
-        [end_time_value],
-        [diagnostic.end_value],
-        color="brown",
-        s=35,
-        zorder=5,
-        label="signal[end_idx-1]",
-    )
-    ax.axhline(diagnostic.floor_level, color="black", linestyle="--", linewidth=1.2, label="floor_level")
+
     ax.plot(
         [left_time, peak_time],
         [diagnostic.left_min, diagnostic.current_val],
@@ -480,9 +463,6 @@ def plot_event(
         f"left_rise={diagnostic.left_rise:.8f}",
         f"right_fall={diagnostic.right_fall:.8f}",
         f"peak-max(min)={diagnostic.peak_to_shoulder_delta:.8f}",
-        f"floor_level={diagnostic.floor_level:.8f}",
-        f"signal[start_idx]={diagnostic.start_value:.8f} @ {diagnostic.start_idx}",
-        f"signal[end_idx-1]={diagnostic.end_value:.8f} @ {diagnostic.end_idx - 1}",
         f"height_thresh={diagnostic.height_thresh:.8f}",
         f"prominence_thresh={diagnostic.prominence_thresh:.8f}",
         f"peak_to_shoulder_thresh={MIN_PEAK_TO_SHOULDER_DELTA:.8f}",
@@ -779,30 +759,30 @@ def main() -> int:
             false_amplitudes,
         )
 
-    # for event in events:
-    #     plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
-    #     plot_event(
-    #         detection["signal"],
-    #         detection["times"],
-    #         event.diagnostic,
-    #         event.category,
-    #         plot_path,
-    #         float(args.plot_window_sec),
-    #     )
+    for event in events:
+        plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
+        plot_event(
+            detection["signal"],
+            detection["times"],
+            event.diagnostic,
+            event.category,
+            plot_path,
+            float(args.plot_window_sec),
+        )
 
-    # save_event_summary_csv(event_summary_csv, events)
-    # save_metrics_report(
-    #     metrics_report_path,
-    #     edf_path=edf_path,
-    #     manual_dat_path=manual_dat_path,
-    #     auto_dat_path=auto_dat_path,
-    #     output_dir=output_dir,
-    #     total_seconds=total_seconds,
-    #     predicted_seconds=predicted_seconds,
-    #     manual_seconds=manual_seconds,
-    #     dropped_manual_seconds=dropped_manual_seconds,
-    #     metrics=comparison,
-    # )
+    save_event_summary_csv(event_summary_csv, events)
+    save_metrics_report(
+        metrics_report_path,
+        edf_path=edf_path,
+        manual_dat_path=manual_dat_path,
+        auto_dat_path=auto_dat_path,
+        output_dir=output_dir,
+        total_seconds=total_seconds,
+        predicted_seconds=predicted_seconds,
+        manual_seconds=manual_seconds,
+        dropped_manual_seconds=dropped_manual_seconds,
+        metrics=comparison,
+    )
 
     print(f"EDF: {edf_path}")
     print(f"Manual DAT: {manual_dat_path}")
