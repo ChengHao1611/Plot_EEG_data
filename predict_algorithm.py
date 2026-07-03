@@ -195,7 +195,7 @@ class EEGBrowserGUI:
         self.safe_update_status("正在生成狀態演變圖...")
         
         # 設定反應時間判定門檻
-        ALERT_THRESHOLD = 3.0
+        ALERT_THRESHOLD = 3
         FATIGUE_THRESHOLD = 7.0
         
         # 黑線

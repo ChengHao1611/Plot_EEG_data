@@ -3,7 +3,7 @@ import os
 import sys
 import mne
 import numpy as np
-from scipy.signal import find_peaks
+from filters import apply_lowpass_filter
 
 DYNAMIC_PROMINENCE = 0.00007
 
@@ -75,6 +75,7 @@ def detect_eye_movements(raw, target_channels, output_path):
     data, times = raw.get_data(), raw.times
     sfreq = raw.info['sfreq']
     signal = data[1]
+    #signal = apply_lowpass_filter(signal, sfreq, cutoff_hz=15.0)
 
     # 使用 MAD 方法計算動態閾值
     median = np.median(signal)

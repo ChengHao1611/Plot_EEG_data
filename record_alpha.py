@@ -6,7 +6,7 @@ from typing import Sequence
 import numpy as np
 import pyedflib
 
-from filters import apply_highpass_filter, apply_lowpass_filter, apply_notch_filter
+from filters import apply_highpass_filter, apply_lowpass_filter
 
 # Detection settings mirrored from the standalone alpha workflow.
 ALPHA_THRESHOLD = 1500.0
@@ -17,7 +17,6 @@ PEAK_HIGH_HZ = 30.0
 USE_NFFT_POW2 = True
 APPLY_HIGHPASS = True
 APPLY_LOWPASS = True
-NOTCH_FREQ: float | None = None
 
 
 def save_dat_seconds(output_path: str | Path, seconds: Sequence[int]) -> None:
@@ -158,8 +157,6 @@ def detect_alpha(
         signal = apply_highpass_filter(signal, sfreq, cutoff_hz=1.0)
     if APPLY_LOWPASS:
         signal = apply_lowpass_filter(signal, sfreq, cutoff_hz=30.0)
-    if NOTCH_FREQ is not None:
-        signal = apply_notch_filter(signal, sfreq, notch_freq=float(NOTCH_FREQ))
 
     window_size = int(round(sfreq))
     if window_size <= 0:
