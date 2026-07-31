@@ -204,6 +204,7 @@ $RECYCLE.BIN/
 *.eps
 *.bmp
 *.tiff
+!docs/images/*.png
 
 # 備份文件
 *.bak
