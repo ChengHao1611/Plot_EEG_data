@@ -7,6 +7,7 @@ from eeg_analysis.detection.record_alpha import detect_alpha
 
 # DYNAMIC_PROMINENCE = 0.00006
 
+
 def get_args():
     parser = argparse.ArgumentParser(description='Detect eye movements from an EDF file')
     parser.add_argument("--file", type=str, help='The path to the EDF file')
@@ -29,12 +30,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     output_dir = args.output_dir
-    if output_dir is None:
-        print('Hint: The --output-dir parameter was not detected.')
-        output_dir = input(
-            'Please enter the output directory (leave blank to use the EDF file\'s folder): '
-        ).strip().replace('"', '').replace("'", "")
-
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     else:
