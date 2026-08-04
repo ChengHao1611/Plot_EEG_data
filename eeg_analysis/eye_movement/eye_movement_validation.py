@@ -121,16 +121,23 @@ def get_args() -> argparse.Namespace:
     parser.add_argument(
         "--notch-freq",
         type=float,
-        default=60.0,
+        default=0.0,
         help=(
             "Powerline interference frequency (Hz) to notch out, including harmonics up to "
-            "Nyquist. Taiwan mains power is 60Hz. Set to 0 to disable."
+            "Nyquist. Default is disabled (0) because the 10Hz low-pass already attenuates "
+            "60Hz well beyond its transition band; only useful if you raise --h-freq closer "
+            "to 60Hz. Taiwan mains power is 60Hz."
         ),
     )
     parser.add_argument(
         "--no-filter",
         action="store_true",
         help="Disable all filtering (notch + band-pass) and use the raw signal as-is.",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip generating the per-event true/false/miss diagnostic PNG plots.",
     )
     return parser.parse_args()
 
@@ -625,16 +632,16 @@ def apply_noise_filters(
     sfreq = float(picked_raw.info["sfreq"])
     nyquist = sfreq / 2.0
 
-    # if notch_freq and notch_freq > 0:
-    #     harmonics = np.arange(notch_freq, nyquist, notch_freq)
-    #     if harmonics.size:
-    #         picked_raw.notch_filter(
-    #             harmonics,
-    #             picks=target_channels[:2],
-    #             fir_design="firwin",
-    #             phase="zero",
-    #             verbose=False,
-    #         )
+    if notch_freq and notch_freq > 0:
+        harmonics = np.arange(notch_freq, nyquist, notch_freq)
+        if harmonics.size:
+            picked_raw.notch_filter(
+                harmonics,
+                picks=target_channels[:2],
+                fir_design="firwin",
+                phase="zero",
+                verbose=False,
+            )
 
     l_freq_arg = float(l_freq) if l_freq and l_freq > 0 else None
     h_freq_arg = float(h_freq) if h_freq and h_freq > 0 else None
@@ -659,7 +666,7 @@ def detect_eye_movements(
     prominence_thresh: float,
     l_freq: float | None = 0.1,
     h_freq: float | None = 10.0,
-    notch_freq: float | None = 60.0,
+    notch_freq: float | None = 0.0,
 ) -> dict[str, object]:
     picked_raw = raw.copy().pick(target_channels[:2])
     picked_raw = apply_noise_filters(
@@ -854,16 +861,17 @@ def main() -> int:
             false_amplitudes,
         )
 
-    # for event in events:
-    #     plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
-    #     plot_event(
-    #         detection["signal"],
-    #         detection["times"],
-    #         event.diagnostic,
-    #         event.category,
-    #         plot_path,
-    #         float(args.plot_window_sec),
-    #     )
+    if not bool(args.no_plots):
+        for event in events:
+            plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
+            plot_event(
+                detection["signal"],
+                detection["times"],
+                event.diagnostic,
+                event.category,
+                plot_path,
+                float(args.plot_window_sec),
+            )
 
     # save_event_summary_csv(event_summary_csv, events)
     # save_metrics_report(
@@ -892,6 +900,7 @@ def main() -> int:
         print(
             f"Filtering: notch={notch_freq}Hz, band-pass=[{l_freq}, {h_freq}]Hz (zero-phase FIR)"
         )
+    print(f"Plots: {'skipped (--no-plots)' if bool(args.no_plots) else 'generated'}")
     print(f"Total seconds: {total_seconds}")
     print(f"Predicted seconds: {len(predicted_seconds)}")
     print(f"Manual seconds: {len(manual_seconds)}")

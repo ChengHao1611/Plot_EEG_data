@@ -5,11 +5,16 @@ import mne
 from eeg_analysis.detection.record_arousal import detect_eye_movements
 from eeg_analysis.detection.record_alpha import detect_alpha
 
-DYNAMIC_PROMINENCE = 0.00006
+# DYNAMIC_PROMINENCE = 0.00006
 
 def get_args():
     parser = argparse.ArgumentParser(description='Detect eye movements from an EDF file')
     parser.add_argument("--file", type=str, help='The path to the EDF file')
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help='輸出資料夾路徑。若未指定，預設輸出到 EDF 檔案所在的資料夾。若資料夾不存在會自動建立。',
+    )
     return parser.parse_args()
 
 
@@ -22,9 +27,21 @@ if __name__ == "__main__":
     if not os.path.exists(file_path):
         print(f"Error: The file '{file_path}' does not exist.")
         sys.exit(1)
-    file_dir = os.path.dirname(file_path)
-    output_eyeblink_path = os.path.join(file_dir, "eyeblink.dat")
-    output_alpha_path = os.path.join(file_dir, "Alpha.dat")
+
+    output_dir = args.output_dir
+    if output_dir is None:
+        print('Hint: The --output-dir parameter was not detected.')
+        output_dir = input(
+            'Please enter the output directory (leave blank to use the EDF file\'s folder): '
+        ).strip().replace('"', '').replace("'", "")
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        output_dir = os.path.dirname(file_path)
+
+    output_eyeblink_path = os.path.join(output_dir, "eyeblink.dat")
+    output_alpha_path = os.path.join(output_dir, "Alpha.dat")
     raw = mne.io.read_raw_edf(file_path, preload=True)
 
     all_channels = raw.ch_names
@@ -35,3 +52,4 @@ if __name__ == "__main__":
     else:
         detect_eye_movements(raw, target_channels, output_eyeblink_path)
         detect_alpha(file_path, output_alpha_path, target_channels)
+        print(f"輸出資料夾：{output_dir}")
