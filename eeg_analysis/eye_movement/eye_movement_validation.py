@@ -100,6 +100,45 @@ def get_args() -> argparse.Namespace:
         action="store_true",
         help="Generate the eye-movement amplitude distribution graph.",
     )
+    parser.add_argument(
+        "--l-freq",
+        type=float,
+        default=0.1,
+        help=(
+            "High-pass corner (Hz) of the band-pass filter applied before detection. "
+            "Removes slow baseline drift. Set to 0 to disable the high-pass side."
+        ),
+    )
+    parser.add_argument(
+        "--h-freq",
+        type=float,
+        default=10.0,
+        help=(
+            "Low-pass corner (Hz) of the band-pass filter applied before detection. "
+            "Removes high-frequency muscle/noise components. Set to 0 to disable the low-pass side."
+        ),
+    )
+    parser.add_argument(
+        "--notch-freq",
+        type=float,
+        default=0.0,
+        help=(
+            "Powerline interference frequency (Hz) to notch out, including harmonics up to "
+            "Nyquist. Default is disabled (0) because the 10Hz low-pass already attenuates "
+            "60Hz well beyond its transition band; only useful if you raise --h-freq closer "
+            "to 60Hz. Taiwan mains power is 60Hz."
+        ),
+    )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Disable all filtering (notch + band-pass) and use the raw signal as-is.",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip generating the per-event true/false/miss diagnostic PNG plots.",
+    )
     return parser.parse_args()
 
 
@@ -576,14 +615,67 @@ def save_metrics_report(
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def apply_noise_filters(
+    picked_raw: mne.io.BaseRaw,
+    target_channels: list[str],
+    *,
+    l_freq: float | None,
+    h_freq: float | None,
+    notch_freq: float | None,
+) -> mne.io.BaseRaw:
+    """Apply a powerline notch filter followed by a zero-phase band-pass filter.
+
+    Zero-phase filtering (MNE's default FIR/firwin design) is used deliberately so
+    that peak timing is not shifted, since downstream logic maps detected peaks back
+    to specific seconds for comparison against the manual labels.
+    """
+    sfreq = float(picked_raw.info["sfreq"])
+    nyquist = sfreq / 2.0
+
+    if notch_freq and notch_freq > 0:
+        harmonics = np.arange(notch_freq, nyquist, notch_freq)
+        if harmonics.size:
+            picked_raw.notch_filter(
+                harmonics,
+                picks=target_channels[:2],
+                fir_design="firwin",
+                phase="zero",
+                verbose=False,
+            )
+
+    l_freq_arg = float(l_freq) if l_freq and l_freq > 0 else None
+    h_freq_arg = float(h_freq) if h_freq and h_freq > 0 else None
+    if l_freq_arg is not None or h_freq_arg is not None:
+        picked_raw.filter(
+            l_freq=l_freq_arg,
+            h_freq=h_freq_arg,
+            picks=target_channels[:2],
+            fir_design="firwin",
+            phase="zero",
+            verbose=False,
+        )
+
+    return picked_raw
+
+
 def detect_eye_movements(
     raw: mne.io.BaseRaw,
     target_channels: list[str],
     *,
     height_mad_scale: float,
     prominence_thresh: float,
+    l_freq: float | None = 0.1,
+    h_freq: float | None = 10.0,
+    notch_freq: float | None = 0.0,
 ) -> dict[str, object]:
     picked_raw = raw.copy().pick(target_channels[:2])
+    picked_raw = apply_noise_filters(
+        picked_raw,
+        target_channels,
+        l_freq=l_freq,
+        h_freq=h_freq,
+        notch_freq=notch_freq,
+    )
     data, times = picked_raw.get_data(), picked_raw.times
     sfreq = float(picked_raw.info["sfreq"])
     #combined_signal = (np.abs(data[0]) + np.abs(data[1])) / 2.0
@@ -708,11 +800,21 @@ def main() -> int:
         print("找不到 FP1 或 FP2 通道")
         return 1
 
+    if bool(args.no_filter):
+        l_freq, h_freq, notch_freq = None, None, None
+    else:
+        l_freq = float(args.l_freq)
+        h_freq = float(args.h_freq)
+        notch_freq = float(args.notch_freq)
+
     detection = detect_eye_movements(
         raw,
         target_channels,
         height_mad_scale=float(args.height_mad_scale),
         prominence_thresh=float(args.prominence),
+        l_freq=l_freq,
+        h_freq=h_freq,
+        notch_freq=notch_freq,
     )
 
     predicted_seconds = list(detection["predicted_seconds"])
@@ -759,16 +861,17 @@ def main() -> int:
             false_amplitudes,
         )
 
-    for event in events:
-        plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
-        plot_event(
-            detection["signal"],
-            detection["times"],
-            event.diagnostic,
-            event.category,
-            plot_path,
-            float(args.plot_window_sec),
-        )
+    if not bool(args.no_plots):
+        for event in events:
+            plot_path = output_dir / event.category / f"{event.category}_second_{event.second:04d}.png"
+            plot_event(
+                detection["signal"],
+                detection["times"],
+                event.diagnostic,
+                event.category,
+                plot_path,
+                float(args.plot_window_sec),
+            )
 
     save_event_summary_csv(event_summary_csv, events)
     save_metrics_report(
@@ -791,6 +894,13 @@ def main() -> int:
     print(f"Event summary CSV: {event_summary_csv}")
     print(f"Metrics report: {metrics_report_path}")
     print(f"Channels used: {target_channels[:2]}")
+    if bool(args.no_filter):
+        print("Filtering: disabled (--no-filter)")
+    else:
+        print(
+            f"Filtering: notch={notch_freq}Hz, band-pass=[{l_freq}, {h_freq}]Hz (zero-phase FIR)"
+        )
+    print(f"Plots: {'skipped (--no-plots)' if bool(args.no_plots) else 'generated'}")
     print(f"Total seconds: {total_seconds}")
     print(f"Predicted seconds: {len(predicted_seconds)}")
     print(f"Manual seconds: {len(manual_seconds)}")

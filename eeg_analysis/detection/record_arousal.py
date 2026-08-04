@@ -3,43 +3,96 @@ import os
 import sys
 import mne
 import numpy as np
-from eeg_analysis.common.filters import apply_lowpass_filter
 
-DYNAMIC_PROMINENCE = 0.00007
+# === 偵測參數（與 eye_movement_validation.py 對齊）===
+HEIGHT_MAD_SCALE = 0.5          # 高度門檻 = median + HEIGHT_MAD_SCALE * MAD
+MIN_PEAK_TO_SHOULDER_DELTA = 0.00007  # peak 與左右兩側較高谷值的最小落差門檻
+PEAK_WINDOW_SEC = 0.15          # 左右觀察窗口（秒）
+
+# 濾波設定（zero-phase band-pass，與 eye_movement_validation.py 預設一致）
+L_FREQ = 0.1   # 高通截止頻率 (Hz)，去除慢速基線飄移；設 None/0 可關閉
+H_FREQ = 10.0  # 低通截止頻率 (Hz)，去除高頻肌電/雜訊；設 None/0 可關閉
+NOTCH_FREQ = 0.0  # 電源雜訊陷波頻率 (Hz)；預設關閉
 
 
-def custom_eye_movement_peaks(signal, sfreq, height_thresh, prominence_thresh):
+def compute_peak_to_shoulder_amplitude(current_val, left_min, right_min):
+    """peak 與左右兩側「較高」谷值之間的落差（越大代表訊號起伏越明顯）。"""
+    if current_val is None or left_min is None or right_min is None:
+        return None
+    return float(current_val) - float(max(left_min, right_min))
+
+
+def apply_noise_filters(picked_raw, target_channels, *, l_freq, h_freq, notch_freq):
+    """套用電源雜訊陷波 + zero-phase band-pass 濾波。
+
+    使用 zero-phase 濾波（MNE 預設的 FIR/firwin 設計）是為了避免 peak 的時間點被
+    偏移，因為後續會把偵測到的 peak 對應回特定的秒數。
+    """
+    sfreq = float(picked_raw.info["sfreq"])
+    nyquist = sfreq / 2.0
+
+    if notch_freq and notch_freq > 0:
+        harmonics = np.arange(notch_freq, nyquist, notch_freq)
+        if harmonics.size:
+            picked_raw.notch_filter(
+                harmonics,
+                picks=target_channels[:2],
+                fir_design="firwin",
+                phase="zero",
+                verbose=False,
+            )
+
+    l_freq_arg = float(l_freq) if l_freq and l_freq > 0 else None
+    h_freq_arg = float(h_freq) if h_freq and h_freq > 0 else None
+    if l_freq_arg is not None or h_freq_arg is not None:
+        picked_raw.filter(
+            l_freq=l_freq_arg,
+            h_freq=h_freq_arg,
+            picks=target_channels[:2],
+            fir_design="firwin",
+            phase="zero",
+            verbose=False,
+        )
+
+    return picked_raw
+
+
+def custom_eye_movement_peaks(signal, sfreq, height_thresh, peak_to_shoulder_thresh):
     """
     Parameters:
-    - signal: 綜合後的訊號 (1D numpy array)
+    - signal: 訊號 (1D numpy array)
     - sfreq: 取樣率 (例如 250)
-    - height_thresh: 絕對高度門檻 (median + 0.5 * mad)
-    - prominence_thresh: 突起度門檻
-    """
-    peaks = []
-    
-    # 將秒數轉換為點數 (Ticks)
-    window_ticks = int(sfreq * 0.15) 
-    
-    # 為了安全檢查，前後留出一個窗口的邊界
-    for i in range(window_ticks, len(signal) - window_ticks):
+    - height_thresh: 絕對高度門檻 (median + HEIGHT_MAD_SCALE * mad)
+    - peak_to_shoulder_thresh: peak 與左右較高谷值的最小落差門檻
 
+    判斷邏輯與 eye_movement_validation.py 的 build_candidate_diagnostic /
+    collect_candidate_diagnostics 保持一致：
+      1. 嚴格區域最大值（嚴格大於左右相鄰點）
+      2. 絕對高度門檻
+      3. 在左右窗口內，該點必須是整個窗口內的最大值（is_local_max）
+      4. peak 與左右兩側「較高」谷值的落差必須大於門檻（peak_to_shoulder_ok）
+    """
+    window_ticks = max(int(round(sfreq * PEAK_WINDOW_SEC)), 1)
+    peaks = []
+
+    for i in range(window_ticks, len(signal) - window_ticks):
         current_val = signal[i]
-        
-        # ensure that the current point is a local maximum
-        if current_val < signal[i - 1] or current_val < signal[i + 1]:
+
+        # -------------------------------------------------------------
+        # 關卡 1：嚴格區域最大值（與驗證腳本一致，使用 <= 而非 <）
+        # -------------------------------------------------------------
+        if current_val <= signal[i - 1] or current_val <= signal[i + 1]:
             continue
-            
+
         # -------------------------------------------------------------
         # 關卡 2：絕對高度檢查
         # -------------------------------------------------------------
         if current_val < height_thresh:
             continue
-            
+
         # -------------------------------------------------------------
-        # 關卡 3：🛡️ 雙邊驟升與驟降檢查（直接消滅「單邊階梯跳躍」）
+        # 關卡 3：窗口內最大值檢查（確認不是被更高的鄰近點蓋過）
         # -------------------------------------------------------------
-        # 撈出左邊與右邊窗口內的最低點
         left_start = max(0, i - window_ticks)
         left_end = i
         right_start = i
@@ -47,46 +100,55 @@ def custom_eye_movement_peaks(signal, sfreq, height_thresh, prominence_thresh):
 
         left_window = signal[left_start:left_end]
         right_window = signal[right_start:right_end]
-        
+
+        if left_window.size == 0 or right_window.size == 0:
+            continue
+
         left_min = np.min(left_window)
         right_min = np.min(right_window)
-        left_min_idx = left_start + np.argmin(left_window)
-        right_min_idx = i + np.argmin(right_window)
-        window_max_idx = left_start + np.argmax(signal[left_start : right_end + 1])
 
-        if window_max_idx != i:
+        current_window = signal[left_start:right_end]
+        max_index = left_start + int(np.argmax(current_window))
+        if max_index != i:
             continue
-        
-        # 計算左爬升與右跌落
-        left_rise = current_val - left_min
-        right_fall = current_val - right_min
-        
-        # 雙邊都必須大於你設定的突起度門檻（確保不是單邊跳躍，也不是微小毛刺）
-        if min(left_rise, right_fall) < prominence_thresh:
+
+        # -------------------------------------------------------------
+        # 關卡 4：peak-to-shoulder 落差檢查
+        # -------------------------------------------------------------
+        peak_to_shoulder_delta = compute_peak_to_shoulder_amplitude(current_val, left_min, right_min)
+        if peak_to_shoulder_delta is None or peak_to_shoulder_delta <= peak_to_shoulder_thresh:
             continue
-            
-        # 成功通過所有幾何形狀安檢！這絕對是一顆標準的眼動脈衝
+
+        # 成功通過所有檢查！這是一顆標準的眼動脈衝
         peaks.append(i)
-        
+
     return np.array(peaks)
 
-def detect_eye_movements(raw, target_channels, output_path):
-    raw.pick(target_channels)
-    data, times = raw.get_data(), raw.times
-    sfreq = raw.info['sfreq']
-    signal = data[1]
-    #signal = apply_lowpass_filter(signal, sfreq, cutoff_hz=15.0)
 
-    # 使用 MAD 方法計算動態閾值
+def detect_eye_movements(raw, target_channels, output_path):
+    picked_raw = raw.copy().pick(target_channels[:2])
+    picked_raw = apply_noise_filters(
+        picked_raw,
+        target_channels,
+        l_freq=L_FREQ,
+        h_freq=H_FREQ,
+        notch_freq=NOTCH_FREQ,
+    )
+
+    data, times = picked_raw.get_data(), picked_raw.times
+    sfreq = float(picked_raw.info["sfreq"])
+    signal = data[1]
+
+    # 使用 MAD 方法計算動態高度閾值
     median = np.median(signal)
     mad = np.median(np.abs(signal - median))
-    threshold = median + 0.5 * mad
+    height_thresh = median + HEIGHT_MAD_SCALE * mad
 
-    peaks = custom_eye_movement_peaks(signal, sfreq, threshold, DYNAMIC_PROMINENCE)
+    peaks = custom_eye_movement_peaks(signal, sfreq, height_thresh, MIN_PEAK_TO_SHOULDER_DELTA)
     eye_move_seconds = np.unique(np.ceil(times[peaks])).astype(int)
     total_duration = int(times[-1])
-    eye_move_seconds = eye_move_seconds[eye_move_seconds <= total_duration]
-    
+    eye_move_seconds = eye_move_seconds[(eye_move_seconds >= 1) & (eye_move_seconds <= total_duration)]
+
     n_count = len(eye_move_seconds)
     output_data = [n_count] + eye_move_seconds.tolist()
     output_string = ",".join(map(str, output_data))
