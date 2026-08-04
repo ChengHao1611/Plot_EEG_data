@@ -224,5 +224,5 @@ tmp/
 logs/
 
 # 數據目錄（如果數據文件很大或包含敏感信息）
-# data/
+data/
 # datasets/
