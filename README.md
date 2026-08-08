@@ -1,8 +1,8 @@
-# 基於 EEG 與 Eyeblink 之疲勞駕駛預測演算法
+# 基於 EEG 與眼動訊號之疲勞駕駛預測系統
 
-> Fatigue driving prediction algorithm based on EEG and Eyeblink
+> Fatigue Driving Prediction System Based on EEG and Eye-Movement Signals
 
-本專題以腦電圖（EEG）的 **α 波** 與 **眼動／眨眼訊號（Eyeblink）** 為基礎，預測駕駛者是否將進入疲勞狀態，並在疲勞事件發生前提供警示，以提升行車安全、降低事故風險。
+本專題利用駕駛者的反應時間、眼動訊號與 EEG Alpha 訊號，建立一套個人化疲勞駕駛預測系統。系統先利用開始駕駛後前 300 秒的反應時間，判斷駕駛者目前是否已經疲勞；若尚未疲勞，則使用這 300 秒建立個人化基準，並在 300 秒後持續分析眼動與 Alpha 訊號，以預測接下來發生的第一個疲勞事件，期望在反應時間明顯變慢以前提供警示。
 
 指導教授：梁勝富<br>
 專題成員：許成豪、潘亮銓
@@ -15,28 +15,85 @@
 - 車輛偏移通常須在車輛已出現明顯偏移後才能警示。
 - θ 波多用於辨識已明顯疲勞或接近睡眠的狀態，較難提前預測。
 
-因此，本研究結合眼動與 α 波兩項生理訊號，設計可提前預測疲勞駕駛事件的演算法。
+因此，本研究將系統分成兩個功能：第一個功能確認駕駛者現在是否適合繼續駕駛；第二個功能則在駕駛者通過初始檢查後，利用個人化眼動與 Alpha 特徵，預測 300 秒後的第一個疲勞事件。
+
+## 系統目標
+
+### 功能一：確認目前能否繼續駕駛
+
+系統觀察前 300 秒的車道偏移事件與 Reaction Time。Reaction Time 定義為車輛開始偏移至駕駛者開始導正之間的時間；當 Reaction Time 大於或等於 1.6 秒時，記為一個疲勞事件。如果任一連續 60 秒內出現兩個疲勞事件，系統判定駕駛者已處於疲勞狀態，輸出禁止駕駛結果，不再進入後續預測流程。
+
+### 功能二：預測第一個疲勞事件
+
+若駕駛者通過功能一，系統會利用前 300 秒建立個人化 Reaction Time、眼動與 Alpha Power baseline。從第 301 秒開始，系統每秒更新最近 30 秒的眼動累積值與最近 10 秒的 Alpha 特徵累積值，並預測 300 秒後即將發生的第一個疲勞事件。功能二只評估這一個疲勞事件；當第一個疲勞事件發生後，該筆資料的預測流程即結束。
 
 ## 系統流程
 
 ```text
-EEG 原始資料
-   ├─ 濾波 → α 波偵測     ─┐
-   └─ 濾波 → 眼動眨眼偵測 ─┘ → 疲勞判定 → 警示 → 恢復監測 → 結束
+開始駕駛
+   │
+   ▼
+前 300 秒：以 Reaction Time 判斷目前是否疲勞
+   │
+   ├─ 60 秒內出現 2 個 Reaction Time >= 1.6 秒
+   │      └─ 判定已疲勞 → 禁止駕駛 → 結束
+   │
+   └─ 未達疲勞條件
+          │
+          ▼
+建立個人化 Baseline
+├─ Reaction Time Baseline
+├─ 眼動 Baseline
+└─ Alpha Power Baseline
+          │
+          ▼
+第 301 秒開始每秒分析
+├─ 眼動：30 秒 sliding window
+└─ Alpha：10 秒 sliding window
+          │
+          ▼
+預測 300 秒後的第一個疲勞事件
+          │
+          ├─ 提前發出警告
+          └─ 未成功預測
+          │
+          ▼
+第一個疲勞事件發生 → 計算是否命中及提前秒數 → 結束
 ```
 
-- 以 EDF 格式的多通道 EEG 資料為輸入，主要使用 FP1、FP2 等通道。
-- α 波以 10 秒滑動視窗累積；眼動訊號以 30 秒滑動視窗累積。
-- 以駕駛者對車道偏移事件的反應時間作為疲勞判定參考。
-- 當生理訊號達到演算法門檻時，系統發出疲勞警示，並持續監測恢復狀態。
+## 系統輸入與輸出
+
+### 輸入
+
+- EDF 格式的多通道 EEG 與 Status 訊號。
+- FP2 通道的眼動與 EEG 訊號。
+- 車道偏移開始時間與駕駛者開始導正時間，用來計算 Reaction Time。
+
+### 輸出
+
+- 功能一結果：允許繼續駕駛或禁止駕駛。
+- 個人化 Reaction Time、眼動與 Alpha Power baseline。
+- 個人化疲勞門檻：`min(1.6, RT baseline × 1.5)`。
+- 300 秒後第一個疲勞事件的預測警告時間。
+- 是否成功預測第一個疲勞事件，以及成功時可提前多少秒。
+
+## 訊號與特徵摘要
+
+- **Reaction Time**：車輛開始偏移至駕駛者開始導正之間的時間。
+- **眼動訊號**：FP2 經 0.1–10 Hz 濾波後偵測眼動，每秒更新最近 30 秒的眼動累積次數。
+- **EEG 頻帶**：FP2 經 1–30 Hz 濾波後，以每秒 FFT 計算 Theta（4–7 Hz）、Alpha（8–12 Hz）與 Beta（13–20 Hz）Power。
+- **眼動排除**：偵測到眼動的秒數不進行 EEG 頻譜分析。
+- **Alpha 特徵**：當 Alpha Power 同時大於 Theta Power、Beta Power 及個人 Alpha baseline 時，記錄該秒出現 Alpha 特徵，再以 10 秒 sliding window 累積。
+- **個人化疲勞事件**：300 秒後以 `min(1.6, RT baseline × 1.5)` 作為該駕駛者的 Reaction Time 疲勞門檻。
 
 ## 資料集與實驗設計
 
-本研究使用持續注意力駕駛任務中的多通道 EEG 紀錄，以 **9 筆資料**建立疲勞事件與生理訊號的判定門檻，並進行效能評估。
+本研究使用持續注意力駕駛任務中的多通道 EEG 紀錄，將資料分為 **14 筆訓練資料**與 **9 筆測試資料**。訓練資料用來觀察第一個疲勞事件發生前的眼動與 Alpha 變化，並建立及調整預測規則；規則確定後，再使用測試資料進行最終驗證。
 
 ```text
-9 筆 EEG 駕駛資料
-   └─ 建立疲勞標準、驗證訊號偵測與評估疲勞預測效能
+23 筆 EEG 駕駛資料
+   ├─ 14 筆訓練資料 → 建立及調整疲勞預測規則
+   └─  9 筆測試資料 → 驗證第一個疲勞事件的預測效能
 ```
 
 原始 EEG 資料位於 `data/raw_edf/`；特徵表、分析結果與圖表則依功能放置於 `data/`、`eeg_analysis/` 與 `tools/`。
@@ -169,6 +226,8 @@ EEG 原始資料
 ├─ eeg_analysis/
 │  ├─ detection/                       # α 波與眼動自動偵測
 │  ├─ driving_state/                   # 駕駛狀態分析 GUI
+│  ├─ fatigue_driving_prediction_system/
+│  │                                    # 整合式疲勞駕駛預測系統
 │  ├─ alpha_validation/                # α 波人工標註驗證
 │  ├─ eye_movement/                    # 眼動驗證與分布分析
 │  └─ statistics_30s_alpha_eyeblink_of_fatigue/
@@ -181,6 +240,14 @@ EEG 原始資料
 ## 使用方式
 
 以下指令需在專案根目錄執行，並先安裝程式所需的 Python 套件，例如 `mne`、`numpy`、`pandas`、`matplotlib` 與 `openpyxl`。
+
+### 執行功能一
+
+```powershell
+python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file data/raw_edf/eeg/s11_060920_1n_raw.edf
+```
+
+功能一讀取 EDF 的 Status 與 FP2 通道，以 Status 251／252 作為車輛偏移開始、253 作為導正開始，並將事件時間向上取整至第 1～300 秒。若 60 秒內出現兩個 `Reaction Time >= 1.6` 秒的事件，輸出疲勞結果；否則建立 Reaction Time 與 Alpha Power 的平均及中位數 baseline。輸出包含 Reaction Time 事件表、功能一結果 Excel 與驗證圖；非疲勞資料另輸出 `eyeblink.dat` 與 `Alpha.dat`。
 
 ### 偵測 α 波與眼動訊號
 
@@ -197,6 +264,14 @@ python -m eeg_analysis.driving_state.predict_algorithm
 ```
 
 介面需選擇事件 Excel、α 波 DAT 與眼動 DAT，可檢視事件切片、整體趨勢，以及預測與實際駕駛狀態的比較。
+
+### 比較清醒與非清醒的眼動分布
+
+```powershell
+python -m eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.plot_first_fatigue_awake_eye_distributions
+```
+
+工具讀取 `data/first_fatigue/detection_first_fatigue.xlsx` 的「來源檔案」與「清醒」標註。清醒資料取開始後窗口結束秒 `30, 40, ..., 300` 的 30 秒眼動累積值；非清醒資料同樣從 30 秒起每 10 秒取樣，僅保留首次 `事件反應時間 > 1.6 秒` 之前或第 300 秒以前的窗口，以較早者為準。輸出圖表與逐窗口明細會存入 `data/first_fatigue/output/`。
 
 更完整的資料格式、各工具的輸入輸出與已知限制，請參考 [docs/目錄整理說明.md](docs/目錄整理說明.md)。
 

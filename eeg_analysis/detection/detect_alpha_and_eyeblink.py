@@ -45,6 +45,11 @@ if __name__ == "__main__":
     if len(target_channels) < 2:
         print("找不到 FP1 或 FP2 通道")
     else:
-        detect_eye_movements(raw, target_channels, output_eyeblink_path)
-        detect_alpha(file_path, output_alpha_path, target_channels)
+        eye_seconds = detect_eye_movements(raw, target_channels, output_eyeblink_path)
+        detect_alpha(
+            file_path,
+            output_alpha_path,
+            target_channels,
+            eye_seconds=eye_seconds,
+        )
         print(f"輸出資料夾：{output_dir}")

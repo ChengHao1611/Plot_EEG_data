@@ -125,8 +125,29 @@ def custom_eye_movement_peaks(signal, sfreq, height_thresh, peak_to_shoulder_thr
     return np.array(peaks)
 
 
-def detect_eye_movements(raw, target_channels, output_path):
+def detect_eye_movements(
+    raw,
+    target_channels,
+    output_path,
+    *,
+    start_second=1,
+    end_second=None,
+):
+    """Detect eye-movement seconds, save DAT, and return the saved seconds.
+
+    Seconds are one-based and event timestamps are rounded upward.  Optional
+    bounds allow Function One to derive its eye mask using only seconds 1--300.
+    """
+    if start_second < 1:
+        raise ValueError("start_second 必須大於等於 1")
+    if end_second is not None and end_second < start_second:
+        raise ValueError("end_second 必須大於等於 start_second")
+
     picked_raw = raw.copy().pick(target_channels[:2])
+    if end_second is not None:
+        available_end = float(picked_raw.times[-1])
+        picked_raw.crop(tmin=0.0, tmax=min(float(end_second), available_end))
+    picked_raw.load_data()
     picked_raw = apply_noise_filters(
         picked_raw,
         target_channels,
@@ -137,7 +158,15 @@ def detect_eye_movements(raw, target_channels, output_path):
 
     data, times = picked_raw.get_data(), picked_raw.times
     sfreq = float(picked_raw.info["sfreq"])
-    signal = data[1]
+    fp2_index = next(
+        (
+            index
+            for index, channel_name in enumerate(picked_raw.ch_names)
+            if "fp2" in channel_name.casefold()
+        ),
+        len(picked_raw.ch_names) - 1,
+    )
+    signal = data[fp2_index]
 
     # 使用 MAD 方法計算動態高度閾值
     median = np.median(signal)
@@ -146,15 +175,23 @@ def detect_eye_movements(raw, target_channels, output_path):
 
     peaks = custom_eye_movement_peaks(signal, sfreq, height_thresh, MIN_PEAK_TO_SHOULDER_DELTA)
     eye_move_seconds = np.unique(np.ceil(times[peaks])).astype(int)
-    total_duration = int(times[-1])
-    eye_move_seconds = eye_move_seconds[(eye_move_seconds >= 1) & (eye_move_seconds <= total_duration)]
+    last_included_second = int(np.ceil(times[-1]))
+    if end_second is not None:
+        last_included_second = min(last_included_second, int(end_second))
+    eye_move_seconds = eye_move_seconds[
+        (eye_move_seconds >= int(start_second))
+        & (eye_move_seconds <= last_included_second)
+    ]
 
     n_count = len(eye_move_seconds)
     output_data = [n_count] + eye_move_seconds.tolist()
     output_string = ",".join(map(str, output_data))
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    os.makedirs(output_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
-        f.write(output_string)
+        f.write(output_string + "\n")
 
     print(f"處理完成！")
     print(f"總眼動秒數：{n_count}")
     print(f"結果已存入：{output_path}")
+    return eye_move_seconds.tolist()

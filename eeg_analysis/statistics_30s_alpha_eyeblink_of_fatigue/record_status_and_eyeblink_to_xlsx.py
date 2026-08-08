@@ -1,8 +1,163 @@
+import math
+from dataclasses import dataclass
+from pathlib import Path
+
 import pyedflib
 import numpy as np
 from openpyxl import Workbook  # 新增
 import os  # 新增
 from openpyxl.utils import get_column_letter
+
+
+DEVIATION_START_CODES = frozenset({251, 252})
+CORRECTION_START_CODE = 253
+CORRECTION_END_CODE = 254
+
+
+@dataclass
+class ReactionTimeEvent:
+    """One lane-deviation event reconstructed from the EDF Status channel."""
+
+    event_index: int
+    deviation_status: int
+    deviation_time: float
+    correction_start_time: float
+    event_second: int
+    reaction_time: float
+    correction_end_time: float | None = None
+
+    @property
+    def return_to_lane_time(self) -> float | None:
+        if self.correction_end_time is None:
+            return None
+        return self.correction_end_time - self.correction_start_time
+
+
+def _find_status_channel_index(labels) -> int:
+    for index, label in enumerate(labels):
+        if "status" in str(label).casefold():
+            return index
+    raise ValueError("未找到 Status 通道，請確認 EDF 通道標籤。")
+
+
+def parse_reaction_time_events(
+    status_signal, sample_rate: float
+) -> list[ReactionTimeEvent]:
+    """Parse a Status array containing 251/252 -> 253 -> 254 sequences."""
+    if sample_rate <= 0:
+        raise ValueError(f"Status 通道取樣率無效：{sample_rate}")
+
+    rounded_status = np.rint(status_signal).astype(int)
+    if rounded_status.size == 0:
+        return []
+    change_indices = np.flatnonzero(
+        np.r_[True, rounded_status[1:] != rounded_status[:-1]]
+    )
+
+    events: list[ReactionTimeEvent] = []
+    deviation_status: int | None = None
+    deviation_time: float | None = None
+    pending_completion: ReactionTimeEvent | None = None
+
+    for sample_index in change_indices:
+        status_code = int(rounded_status[sample_index])
+        event_time = float(sample_index) / sample_rate
+
+        if status_code in DEVIATION_START_CODES:
+            deviation_status = status_code
+            deviation_time = event_time
+            pending_completion = None
+            continue
+
+        if status_code == CORRECTION_START_CODE:
+            if deviation_status is None or deviation_time is None:
+                continue
+            reaction_time = event_time - deviation_time
+            if reaction_time < 0:
+                deviation_status = None
+                deviation_time = None
+                continue
+            event = ReactionTimeEvent(
+                event_index=len(events) + 1,
+                deviation_status=deviation_status,
+                deviation_time=deviation_time,
+                correction_start_time=event_time,
+                event_second=int(math.ceil(deviation_time)),
+                reaction_time=reaction_time,
+            )
+            events.append(event)
+            pending_completion = event
+            deviation_status = None
+            deviation_time = None
+            continue
+
+        if status_code == CORRECTION_END_CODE and pending_completion is not None:
+            pending_completion.correction_end_time = event_time
+            pending_completion = None
+
+    return events
+
+
+def extract_reaction_time_events(edf_path) -> list[ReactionTimeEvent]:
+    """Extract 251/252 -> 253 reaction-time events from an EDF.
+
+    Status 251 and 252 both mean that the vehicle starts deviating.  Status 253
+    marks the driver's correction start and 254 marks correction completion.
+    The event second is the upward-rounded deviation timestamp, while reaction
+    time retains its original duration in seconds.
+    """
+    path = Path(edf_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"EDF not found: {path}")
+
+    reader = pyedflib.EdfReader(str(path))
+    try:
+        status_index = _find_status_channel_index(reader.getSignalLabels())
+        status_signal = reader.readSignal(status_index)
+        sample_rate = float(reader.getSampleFrequency(status_index))
+    finally:
+        reader.close()
+    return parse_reaction_time_events(status_signal, sample_rate)
+
+
+def write_reaction_time_events_xlsx(
+    events: list[ReactionTimeEvent], output_path
+) -> Path:
+    """Write an auditable reaction-time event table."""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "reaction_time_events"
+    worksheet.append(
+        [
+            "事件編號",
+            "偏移Status",
+            "偏移開始時間_秒",
+            "導正開始時間_秒",
+            "向上取整事件秒數",
+            "Reaction Time_秒",
+            "完成導正時間_秒",
+            "導回車道用時_秒",
+        ]
+    )
+    for event in events:
+        worksheet.append(
+            [
+                event.event_index,
+                event.deviation_status,
+                event.deviation_time,
+                event.correction_start_time,
+                event.event_second,
+                event.reaction_time,
+                event.correction_end_time,
+                event.return_to_lane_time,
+            ]
+        )
+    for column in range(1, worksheet.max_column + 1):
+        worksheet.column_dimensions[get_column_letter(column)].width = 22
+    workbook.save(output)
+    return output
 
 def process_alpha_data(ws, base_path, total_seconds):
     """
@@ -144,9 +299,8 @@ def process_eye_blink_data(ws, base_path, total_seconds):
             ws.cell(row=row, column=6, value=rolling_eye_counts[int(second_value)])
 
 def check_status_253(edf_path, tolerance=0.05):
-    f = pyedflib.EdfReader(edf_path)
-
-    # --- 準備 xlsx 檔案與表頭 ---
+    """Legacy workbook export backed by the explicit Status-code parser."""
+    del tolerance  # Kept in the public signature for backward compatibility.
     base_path, _ = os.path.splitext(edf_path)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, "data")
@@ -166,63 +320,29 @@ def check_status_253(edf_path, tolerance=0.05):
     ws["E1"] = "睡著"
     ws["F1"] = "眼動次數（30秒滑動）"
 
-    next_row = 2  # 下一筆資料要寫入的列數（從第2列開始）
+    events = extract_reaction_time_events(edf_path)
+    for next_row, event in enumerate(events, start=2):
+        ws.cell(row=next_row, column=1, value=event.event_second)
+        ws.cell(row=next_row, column=2, value=round(event.reaction_time, 3))
+        ws.cell(
+            row=next_row,
+            column=4,
+            value=(
+                round(event.return_to_lane_time, 3)
+                if event.return_to_lane_time is not None
+                else None
+            ),
+        )
 
-    # ... 下面保持原本程式 ...
-    channel_labels = f.getSignalLabels()
-    status_index = None
-    for i, label in enumerate(channel_labels):
-        if 'status' in label.lower():
-            status_index = i
-            break
+    reader = pyedflib.EdfReader(edf_path)
+    try:
+        status_index = _find_status_channel_index(reader.getSignalLabels())
+        sample_rate = float(reader.getSampleFrequency(status_index))
+        total_seconds = int(len(reader.readSignal(status_index)) // sample_rate)
+    finally:
+        reader.close()
 
-    if status_index is None:
-        print("未找到 Status 通道，請確認標籤名稱")
-        f.close()
-        return
-
-    status_signal = f.readSignal(status_index)
-    sample_rate = int(f.getSampleFrequency(status_index))
-    total_samples = len(status_signal)
-    total_seconds = total_samples // sample_rate
-
-    print(f"取樣率: {sample_rate} Hz, 總長度: {total_seconds} 秒")
-
-    stage = 1
-    for sec in range(total_seconds):
-        start = sec * sample_rate
-        end = start + sample_rate
-        segment = status_signal[start:end]
-        for i in range(len(segment)):
-            #print(segment[i])
-            if segment[i] > 1:
-                if stage == 1:
-                    sec_251 = sec + 0.002 * i
-                    stage = 2
-                elif stage == 2:
-                    sec_253 = sec + 0.002 * i
-                    stage = 3
-                elif stage == 3:
-                    sec_254 = sec + 0.002 * i
-
-                    # --- 新增：在 stage==3 時把資料寫入 xlsx ---
-                    ws.cell(row=next_row, column=1, value=int(sec_251))                              # 秒數（無條件捨去）
-                    ws.cell(row=next_row, column=2, value=float(f"{sec_253 - sec_251:.1f}"))        # 事件反應時間
-                    # C 欄 α波資料會在 process_alpha_data 補入
-                    ws.cell(row=next_row, column=4, value=float(f"{sec_254 - sec_253:.1f}"))        # 導回車道用時
-                    # E 欄 睡著：暫時留空
-
-                    # print(
-                    #     f"第{sec_253:.1f}秒的事件反應時間：{sec_253 - sec_251:.1f}秒, "
-                    #     f"導回車道用時：{sec_254 - sec_253:.1f}秒"
-                    # )
-
-                    next_row += 1
-                    stage = 1
-                # 若有需要，可把 debug 的 print 打開
-                # print(f"秒數 {sec + 0.002 * i} -> Status 平均值: {segment[i]:.2f}, stage={stage}")
-
-    f.close()
+    print(f"總長度: {total_seconds} 秒，Reaction Time事件數：{len(events)}")
 
     # --- 處理 α 波資料並填入 C 欄 ---
     process_alpha_data(ws, base_path, total_seconds)
@@ -232,7 +352,7 @@ def check_status_253(edf_path, tolerance=0.05):
     
     # --- 新增：儲存 xlsx 檔案 ---
     wb.save(xlsx_path)
-    #print(f"結果已儲存到: {xlsx_path}")
+    return xlsx_path
 
 if __name__ == "__main__":
     edf_file = input("請輸入 EDF 檔案路徑: ")
