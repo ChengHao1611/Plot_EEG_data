@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import pyedflib
@@ -12,6 +13,15 @@ from openpyxl.utils import get_column_letter
 DEVIATION_START_CODES = frozenset({251, 252})
 CORRECTION_START_CODE = 253
 CORRECTION_END_CODE = 254
+
+
+def round_reaction_time(value: float) -> float:
+    """Round Reaction Time to one decimal using conventional half-up rounding."""
+    if not math.isfinite(value):
+        raise ValueError(f"Reaction Time 必須是有限數值：{value}")
+    return float(
+        Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    )
 
 
 @dataclass
@@ -57,6 +67,7 @@ def parse_reaction_time_events(
     events: list[ReactionTimeEvent] = []
     deviation_status: int | None = None
     deviation_time: float | None = None
+    deviation_sample_index: int | None = None
     pending_completion: ReactionTimeEvent | None = None
 
     for sample_index in change_indices:
@@ -66,17 +77,26 @@ def parse_reaction_time_events(
         if status_code in DEVIATION_START_CODES:
             deviation_status = status_code
             deviation_time = event_time
+            deviation_sample_index = int(sample_index)
             pending_completion = None
             continue
 
         if status_code == CORRECTION_START_CODE:
-            if deviation_status is None or deviation_time is None:
+            if (
+                deviation_status is None
+                or deviation_time is None
+                or deviation_sample_index is None
+            ):
                 continue
-            reaction_time = event_time - deviation_time
-            if reaction_time < 0:
+            raw_reaction_time = (
+                float(int(sample_index) - deviation_sample_index) / sample_rate
+            )
+            if raw_reaction_time < 0:
                 deviation_status = None
                 deviation_time = None
+                deviation_sample_index = None
                 continue
+            reaction_time = round_reaction_time(raw_reaction_time)
             event = ReactionTimeEvent(
                 event_index=len(events) + 1,
                 deviation_status=deviation_status,
@@ -89,6 +109,7 @@ def parse_reaction_time_events(
             pending_completion = event
             deviation_status = None
             deviation_time = None
+            deviation_sample_index = None
             continue
 
         if status_code == CORRECTION_END_CODE and pending_completion is not None:
@@ -103,8 +124,8 @@ def extract_reaction_time_events(edf_path) -> list[ReactionTimeEvent]:
 
     Status 251 and 252 both mean that the vehicle starts deviating.  Status 253
     marks the driver's correction start and 254 marks correction completion.
-    The event second is the upward-rounded deviation timestamp, while reaction
-    time retains its original duration in seconds.
+    The event second is the upward-rounded deviation timestamp. Reaction Time
+    is conventionally rounded to one decimal place before downstream use.
     """
     path = Path(edf_path)
     if not path.is_file():
@@ -156,6 +177,8 @@ def write_reaction_time_events_xlsx(
         )
     for column in range(1, worksheet.max_column + 1):
         worksheet.column_dimensions[get_column_letter(column)].width = 22
+    for cell in worksheet["F"][1:]:
+        cell.number_format = "0.0"
     workbook.save(output)
     return output
 
@@ -323,7 +346,8 @@ def check_status_253(edf_path, tolerance=0.05):
     events = extract_reaction_time_events(edf_path)
     for next_row, event in enumerate(events, start=2):
         ws.cell(row=next_row, column=1, value=event.event_second)
-        ws.cell(row=next_row, column=2, value=round(event.reaction_time, 3))
+        ws.cell(row=next_row, column=2, value=round(event.reaction_time, 1))
+        ws.cell(row=next_row, column=2).number_format = "0.0"
         ws.cell(
             row=next_row,
             column=4,

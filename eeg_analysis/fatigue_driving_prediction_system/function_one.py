@@ -56,6 +56,7 @@ class FunctionOneResult:
     allow_driving: bool
     events: tuple[ReactionTimeEvent, ...]
     trigger_pair: tuple[ReactionTimeEvent, ReactionTimeEvent] | None
+    trigger_window_start_event: ReactionTimeEvent | None
     rt_mean: float | None
     rt_median: float | None
     personalized_rt_threshold: float | None
@@ -86,18 +87,41 @@ def find_fatigue_trigger_pair(
     events: Sequence[ReactionTimeEvent],
     config: FunctionOneConfig = DEFAULT_CONFIG,
 ) -> tuple[ReactionTimeEvent, ReactionTimeEvent] | None:
-    """Return the first two fatigue events whose rounded seconds are <=60 apart."""
-    fatigue_events = sorted(
-        (
-            event
-            for event in events
-            if event.reaction_time >= config.fatigue_reaction_threshold
-        ),
+    """Return fatigue events that satisfy the follow-up reaction-window rule.
+
+    After an initial fatigue event, the next reaction event starts an inclusive
+    60-second window. A fatigue event at the window start or before its end
+    triggers Function One.
+    """
+    details = find_fatigue_trigger_details(events, config)
+    if details is None:
+        return None
+    initial_fatigue, _, followup_fatigue = details
+    return initial_fatigue, followup_fatigue
+
+
+def find_fatigue_trigger_details(
+    events: Sequence[ReactionTimeEvent],
+    config: FunctionOneConfig = DEFAULT_CONFIG,
+) -> tuple[ReactionTimeEvent, ReactionTimeEvent, ReactionTimeEvent] | None:
+    """Return initial fatigue, next reaction/window start, and follow-up fatigue."""
+    ordered_events = sorted(
+        events,
         key=lambda event: (event.event_second, event.deviation_time),
     )
-    for previous, current in zip(fatigue_events, fatigue_events[1:]):
-        if current.event_second - previous.event_second <= config.fatigue_window_seconds:
-            return previous, current
+    for initial_index, initial_event in enumerate(ordered_events[:-1]):
+        if initial_event.reaction_time < config.fatigue_reaction_threshold:
+            continue
+
+        window_start_event = ordered_events[initial_index + 1]
+        window_end_second = (
+            window_start_event.event_second + config.fatigue_window_seconds
+        )
+        for followup_event in ordered_events[initial_index + 1 :]:
+            if followup_event.event_second > window_end_second:
+                break
+            if followup_event.reaction_time >= config.fatigue_reaction_threshold:
+                return initial_event, window_start_event, followup_event
     return None
 
 
@@ -173,6 +197,12 @@ def write_function_one_workbook(
             result.trigger_pair[0].event_second if result.trigger_pair else None,
         ),
         (
+            "後續60秒窗口開始_秒",
+            result.trigger_window_start_event.event_second
+            if result.trigger_window_start_event
+            else None,
+        ),
+        (
             "觸發疲勞事件2_秒",
             result.trigger_pair[1].event_second if result.trigger_pair else None,
         ),
@@ -191,6 +221,7 @@ def write_function_one_workbook(
             "向上取整事件秒數",
             "Reaction Time_秒",
             "RT>=1.6",
+            "後續60秒窗口起點",
             "觸發功能一",
         ]
     )
@@ -207,6 +238,8 @@ def write_function_one_workbook(
                 event.event_second,
                 event.reaction_time,
                 event.reaction_time >= config.fatigue_reaction_threshold,
+                result.trigger_window_start_event is not None
+                and event.event_index == result.trigger_window_start_event.event_index,
                 event.event_index in trigger_ids,
             ]
         )
@@ -235,6 +268,8 @@ def write_function_one_workbook(
                 ]
             )
 
+    for cell in event_sheet["F"][1:]:
+        cell.number_format = "0.0"
     for worksheet in workbook.worksheets:
         worksheet.freeze_panes = "A2"
         _autosize_worksheet(worksheet)
@@ -294,18 +329,19 @@ def save_rt_validation_plot(
             linewidth=1.8,
             label=f"個人化門檻 {result.personalized_rt_threshold:.3f}秒",
         )
-    if result.trigger_pair is not None:
+    if result.trigger_pair is not None and result.trigger_window_start_event is not None:
         first, second = result.trigger_pair
+        window_start_second = result.trigger_window_start_event.event_second
         axis.axvspan(
-            first.event_second,
-            first.event_second + config.fatigue_window_seconds,
+            window_start_second,
+            window_start_second + config.fatigue_window_seconds,
             color="#F4CCCC",
             alpha=0.45,
-            label="觸發疲勞的60秒窗口",
+            label="下一反應事件起算的60秒窗口",
         )
         for event in (first, second):
             axis.annotate(
-                f"{event.event_second}s, RT={event.reaction_time:.3f}s",
+                f"{event.event_second}s, RT={event.reaction_time:.1f}s",
                 (event.event_second, event.reaction_time),
                 xytext=(6, 8),
                 textcoords="offset points",
@@ -365,7 +401,13 @@ def analyze_function_one(
     write_reaction_time_events_xlsx(
         events, resolved_output_dir / "reaction_time_events.xlsx"
     )
-    trigger_pair = find_fatigue_trigger_pair(events, config)
+    trigger_details = find_fatigue_trigger_details(events, config)
+    trigger_pair = (
+        (trigger_details[0], trigger_details[2])
+        if trigger_details is not None
+        else None
+    )
+    trigger_window_start_event = trigger_details[1] if trigger_details else None
     if not events:
         decision = "INSUFFICIENT_DATA"
         allow_driving = False
@@ -418,6 +460,7 @@ def analyze_function_one(
         allow_driving=allow_driving,
         events=tuple(events),
         trigger_pair=trigger_pair,
+        trigger_window_start_event=trigger_window_start_event,
         rt_mean=rt_mean,
         rt_median=rt_median,
         personalized_rt_threshold=personalized_threshold,

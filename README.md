@@ -21,7 +21,7 @@
 
 ### 功能一：確認目前能否繼續駕駛
 
-系統觀察前 300 秒的車道偏移事件與 Reaction Time。Reaction Time 定義為車輛開始偏移至駕駛者開始導正之間的時間；當 Reaction Time 大於或等於 1.6 秒時，記為一個疲勞事件。如果任一連續 60 秒內出現兩個疲勞事件，系統判定駕駛者已處於疲勞狀態，輸出禁止駕駛結果，不再進入後續預測流程。
+系統觀察前 300 秒的車道偏移事件與 Reaction Time。Reaction Time 定義為車輛開始偏移至駕駛者開始導正之間的時間，並以一般四捨五入記錄至小數點第一位；當 Reaction Time 大於或等於 1.6 秒時，記為一個疲勞事件。出現第一個疲勞事件後，系統從下一個反應事件開始建立 60 秒窗口；如果窗口內又出現一個疲勞事件，就判定駕駛者已經疲勞，輸出禁止駕駛結果，不再進入後續預測流程。
 
 ### 功能二：預測第一個疲勞事件
 
@@ -35,7 +35,7 @@
    ▼
 前 300 秒：以 Reaction Time 判斷目前是否疲勞
    │
-   ├─ 60 秒內出現 2 個 Reaction Time >= 1.6 秒
+   ├─ 出現疲勞事件後，從下一個反應事件起算的 60 秒內又出現疲勞事件
    │      └─ 判定已疲勞 → 禁止駕駛 → 結束
    │
    └─ 未達疲勞條件
@@ -247,7 +247,7 @@
 python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file data/raw_edf/eeg/s11_060920_1n_raw.edf
 ```
 
-功能一讀取 EDF 的 Status 與 FP2 通道，以 Status 251／252 作為車輛偏移開始、253 作為導正開始，並將事件時間向上取整至第 1～300 秒。若 60 秒內出現兩個 `Reaction Time >= 1.6` 秒的事件，輸出疲勞結果；否則建立 Reaction Time 與 Alpha Power 的平均及中位數 baseline。輸出包含 Reaction Time 事件表、功能一結果 Excel 與驗證圖；非疲勞資料另輸出 `eyeblink.dat` 與 `Alpha.dat`。
+功能一讀取 EDF 的 Status 與 FP2 通道，以 Status 251／252 作為車輛偏移開始、253 作為導正開始，並將事件時間向上取整至第 1～300 秒。出現第一個 `Reaction Time >= 1.6` 秒事件後，從下一個反應事件起算 60 秒；若窗口內又出現疲勞事件，就輸出疲勞結果，否則建立 Reaction Time 與 Alpha Power 的平均及中位數 baseline。輸出包含 Reaction Time 事件表、功能一結果 Excel 與驗證圖；非疲勞資料另輸出 `eyeblink.dat` 與 `Alpha.dat`。
 
 ### 偵測 α 波與眼動訊號
 
