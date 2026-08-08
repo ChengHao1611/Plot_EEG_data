@@ -483,6 +483,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--file", required=True, help="Input EDF path.")
     parser.add_argument("--output-dir", help="Output folder for this recording.")
+    parser.add_argument(
+        "--function-one-only",
+        action="store_true",
+        help="Stop after Function One instead of continuing to Function Two.",
+    )
     return parser.parse_args()
 
 
@@ -491,6 +496,32 @@ def main() -> None:
     result = analyze_function_one(args.file, args.output_dir)
     print(f"功能一結果：{result.decision}")
     print(f"允許繼續駕駛：{'是' if result.allow_driving else '否'}")
+    if result.allow_driving and not args.function_one_only:
+        from eeg_analysis.fatigue_driving_prediction_system.function_two import (
+            analyze_function_two,
+        )
+
+        function_two_result = analyze_function_two(
+            args.file,
+            result,
+            result.output_dir,
+        )
+        print(f"功能二狀態：{function_two_result.status}")
+        if function_two_result.target_event is not None:
+            print(
+                "第一個疲勞事件："
+                f"第{function_two_result.target_event.event_second}秒"
+            )
+        else:
+            print("第一個疲勞事件：無")
+        if function_two_result.first_warning_second is not None:
+            print(
+                "第一次警報："
+                f"第{function_two_result.first_warning_second}秒"
+                f"（{function_two_result.first_warning_reason}）"
+            )
+        else:
+            print("第一次警報：無")
     print(f"輸出資料夾：{result.output_dir}")
 
 

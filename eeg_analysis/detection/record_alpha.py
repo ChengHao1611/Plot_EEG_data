@@ -266,8 +266,14 @@ def detect_alpha(
     eye_seconds: Iterable[int] = (),
     start_second: int = 1,
     end_second: int | None = None,
+    alpha_power_threshold: float | None = None,
 ) -> AlphaDetectionResult:
-    """Detect Alpha-dominant non-eye seconds and save them to DAT."""
+    """Detect Alpha-dominant non-eye seconds and save them to DAT.
+
+    When ``alpha_power_threshold`` is supplied, a second qualifies only when
+    Alpha is dominant over Theta/Beta and its power is strictly above that
+    threshold. Function Two uses the personal Alpha median for this value.
+    """
     channel_name = resolve_alpha_channel_name(target_channels)
     signal, sample_rate, resolved_name = load_channel_signal(edf_path, channel_name)
     window_size = int(round(sample_rate))
@@ -288,6 +294,23 @@ def detect_alpha(
         start_second=start_second,
         end_second=final_second,
     )
+    if alpha_power_threshold is not None:
+        threshold = float(alpha_power_threshold)
+        records = [
+            BandPowerRecord(
+                second=record.second,
+                excluded_by_eye=record.excluded_by_eye,
+                theta_power=record.theta_power,
+                alpha_power=record.alpha_power,
+                beta_power=record.beta_power,
+                alpha_qualified=(
+                    record.alpha_qualified
+                    and record.alpha_power is not None
+                    and record.alpha_power > threshold
+                ),
+            )
+            for record in records
+        ]
     result = AlphaDetectionResult(
         channel_name=resolved_name,
         sample_rate=sample_rate,
@@ -296,7 +319,14 @@ def detect_alpha(
     save_dat_seconds(output_path, result.alpha_seconds)
 
     print("處理完成！")
-    print(f"符合 Alpha > Theta 且 Alpha > Beta 的秒數：{len(result.alpha_seconds)}")
+    if alpha_power_threshold is None:
+        condition_text = "Alpha > Theta 且 Alpha > Beta"
+    else:
+        condition_text = (
+            "Alpha > Theta、Alpha > Beta 且 "
+            f"Alpha Power > {float(alpha_power_threshold):.6g}"
+        )
+    print(f"符合 {condition_text} 的秒數：{len(result.alpha_seconds)}")
     print(f"眼動排除秒數：{result.excluded_eye_seconds}")
     print(f"結果已存入：{output_path}")
     return result
@@ -312,6 +342,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--channel", default="FP2")
     parser.add_argument("--start-second", type=int, default=1)
     parser.add_argument("--end-second", type=int)
+    parser.add_argument(
+        "--alpha-power-threshold",
+        type=float,
+        help="Optional strict lower bound for qualified Alpha Power.",
+    )
     return parser.parse_args()
 
 
@@ -326,6 +361,7 @@ def main() -> None:
         eye_seconds=eye_seconds,
         start_second=args.start_second,
         end_second=args.end_second,
+        alpha_power_threshold=args.alpha_power_threshold,
     )
     print(f"Alpha Power平均：{result.alpha_mean}")
     print(f"Alpha Power中位數：{result.alpha_median}")
