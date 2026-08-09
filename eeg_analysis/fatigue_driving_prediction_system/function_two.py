@@ -27,6 +27,7 @@ from eeg_analysis.detection.record_alpha import (
     AlphaDetectionResult,
     BandPowerRecord,
     detect_alpha,
+    save_dat_seconds,
 )
 from eeg_analysis.detection.record_arousal import detect_eye_movements
 from eeg_analysis.fatigue_driving_prediction_system.function_one import (
@@ -586,7 +587,16 @@ def analyze_function_two(
     combined_eye_seconds = tuple(
         sorted(set(function_one_result.eye_seconds) | set(post_eye_seconds))
     )
-    alpha_result = detect_alpha(
+    save_dat_seconds(
+        resolved_output_dir / "eyeblink_function_two.dat",
+        combined_eye_seconds,
+    )
+    print(
+        "功能二完整眼動DAT已更新為第1秒至"
+        f"第{analysis_end_second}秒，共{len(combined_eye_seconds)}個眼動秒。"
+    )
+
+    post_alpha_result = detect_alpha(
         path,
         resolved_output_dir / "Alpha_function_two.dat",
         [fp2_channel],
@@ -600,12 +610,39 @@ def analyze_function_two(
         if function_one_result.alpha_result is not None
         else ()
     )
-    combined_alpha_records = (*baseline_alpha_records, *alpha_result.records)
+    baseline_function_two_records = tuple(
+        BandPowerRecord(
+            second=record.second,
+            excluded_by_eye=record.excluded_by_eye,
+            theta_power=record.theta_power,
+            alpha_power=record.alpha_power,
+            beta_power=record.beta_power,
+            alpha_qualified=(
+                record.alpha_qualified
+                and record.alpha_power is not None
+                and record.alpha_power > alpha_median
+            ),
+        )
+        for record in baseline_alpha_records
+    )
+    alpha_result = AlphaDetectionResult(
+        channel_name=post_alpha_result.channel_name,
+        sample_rate=post_alpha_result.sample_rate,
+        records=(*baseline_function_two_records, *post_alpha_result.records),
+    )
+    save_dat_seconds(
+        resolved_output_dir / "Alpha_function_two.dat",
+        alpha_result.alpha_seconds,
+    )
+    print(
+        "功能二完整Alpha DAT已更新為第1秒至"
+        f"第{analysis_end_second}秒，共{len(alpha_result.alpha_seconds)}個Alpha秒。"
+    )
     features = build_function_two_features(
         start_second=analysis_start_second,
         end_second=analysis_end_second,
         eye_seconds=combined_eye_seconds,
-        alpha_records=combined_alpha_records,
+        alpha_records=alpha_result.records,
         alpha_median_baseline=alpha_median,
         target_second=target_event.event_second if target_event else None,
         config=config,
@@ -649,7 +686,7 @@ def analyze_function_two(
             for event in post_baseline_events
             if event.event_second <= analysis_end_second
         ),
-        eye_seconds=post_eye_seconds,
+        eye_seconds=combined_eye_seconds,
         alpha_result=alpha_result,
         output_dir=resolved_output_dir,
     )

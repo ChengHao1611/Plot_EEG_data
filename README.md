@@ -259,7 +259,7 @@ python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file dat
 python -m eeg_analysis.fatigue_driving_prediction_system.function_two --file data/raw_edf/eeg/s11_060920_1n_raw.edf
 ```
 
-功能二的獨立入口會先執行功能一；只有功能一判定為非疲勞時才繼續。功能二沿用前300秒資料初始化窗口，從第301秒起以 `EyeWindow30 < 10 OR AlphaWindow10 >= 3` 發出警報，並在第一個個人化RT疲勞事件停止。輸出包含 `eyeblink_function_two.dat`、`Alpha_function_two.dat`、`function_two_results.xlsx`及`function_two_pre_fatigue_30s.png`；若第300秒後沒有疲勞事件，則不產生疲勞前30秒圖。
+功能二的獨立入口會先執行功能一；只有功能一判定為非疲勞時才繼續。功能二沿用前300秒資料初始化窗口，從第301秒起以 `EyeWindow30 < 10 OR AlphaWindow10 >= 3` 發出警報，並在第一個個人化RT疲勞事件停止。`eyeblink_function_two.dat`與`Alpha_function_two.dat`涵蓋第1秒至功能二分析終點，其中前300秒沿用功能一結果，301秒後接續功能二結果；另輸出`function_two_results.xlsx`及`function_two_pre_fatigue_30s.png`。若第300秒後沒有疲勞事件，則不產生疲勞前30秒圖。
 
 ### 偵測 α 波與眼動訊號
 
