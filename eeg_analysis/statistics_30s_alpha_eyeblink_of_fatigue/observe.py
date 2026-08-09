@@ -6,10 +6,18 @@ import matplotlib.pyplot as plt
 import threading
 
 try:
-    from .observe_algorithm import classify_actual_states, predict_fatigue_states
+    from .observe_algorithm import (
+        DEFAULT_CONFIG as OBSERVE_CONFIG,
+        classify_actual_states,
+        predict_fatigue_states,
+    )
 except ImportError:
     # 支援直接以 python observe.py 執行。
-    from observe_algorithm import classify_actual_states, predict_fatigue_states
+    from observe_algorithm import (
+        DEFAULT_CONFIG as OBSERVE_CONFIG,
+        classify_actual_states,
+        predict_fatigue_states,
+    )
 
 # 設定字體
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
@@ -220,6 +228,25 @@ class EEGBrowserGUI:
                 )
                 plt.setp(markerline, markersize=4, zorder=5)
                 plt.setp(stemlines, linewidth=0.5, alpha=0.5)
+                ax_twin.axhline(
+                    OBSERVE_CONFIG.fatigue_start_reaction_threshold,
+                    color='#C00000',
+                    linestyle='--',
+                    linewidth=1.4,
+                    label=(
+                        '疲勞RT門檻 '
+                        f'({OBSERVE_CONFIG.fatigue_start_reaction_threshold:g}秒)'
+                    ),
+                    zorder=1,
+                )
+                ax_top.axvline(
+                    300,
+                    color='#4472C4',
+                    linestyle='--',
+                    linewidth=1.5,
+                    label='Baseline結束（第300秒）',
+                    zorder=4,
+                )
 
                 target_df = master_df if 'sleep' in master_df.columns else df_main
 
@@ -258,6 +285,14 @@ class EEGBrowserGUI:
                 ax_bot.step(pred_df['second'], pred_df['pred_state'], where='post', 
                             color='red', linewidth=1.5, alpha=0.7, 
                             label='Predicted State (e/a Logic)', zorder=3)
+                ax_bot.axvline(
+                    300,
+                    color='#4472C4',
+                    linestyle='--',
+                    linewidth=1.5,
+                    label='_nolegend_',
+                    zorder=4,
+                )
                 
                 ax_bot.set_yticks([0, 1])
                 ax_bot.set_yticklabels(['Alert (Awake)', 'Fatigue (Tired)'], fontsize=9)

@@ -13,7 +13,7 @@ import pandas as pd
 class FatigueAlgorithmConfig:
     """黑線實際狀態與紅線預測狀態使用的門檻設定。"""
 
-    fatigue_start_reaction_threshold: float = 1.6
+    fatigue_start_reaction_threshold: float = 1.25
     recovery_reaction_threshold: float = 1.6
     recovery_duration_seconds: int = 60
     init_buffer_seconds: int = 30
