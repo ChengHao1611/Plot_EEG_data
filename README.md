@@ -158,53 +158,6 @@ EyeWindow30 < 10 或 AlphaWindow10 >= 3
 
 圖：資料 `s01_060926_1n` 的 FP2 通道眼動訊號峰值與谷值差異分佈。
 
-### 4. 疲勞發生前的生理訊號分析
-
-為找出疲勞前的訊號變化，本研究依上述規則標記疲勞區間，並統計相鄰疲勞區間之間包含多少個正常事件。
-
-![疲勞區間間隔的事件數分佈](docs/images/fatigue_interval_gap_distribution.png)
-
-圖：相鄰疲勞區間之間的正常事件數分佈。
-
-- **疲勞區段**：自第一個反應時間 ≥ **1.6 秒** 的事件開始。第一個反應時間 < **1.6 秒** 的事件視為恢復開始；其後連續 **60 秒** 內，所有有記錄的反應時間事件都必須 < **1.6 秒**，區段才於「恢復開始秒數 + 60 秒」結束。恢復期間只要任一反應時間事件 ≥ **1.6 秒**，便重新開始計算恢復時間。
-
-接著彙整 9 筆資料中，每個疲勞區間開始前的眼動與 α 波分佈，以比較不同提前時間的訊號趨勢。
-
-#### 疲勞區間開始前 30 秒
-
-<p align="center">
-  <img src="docs/images/fatigue_segment_pre30_eye_distribution.png" alt="疲勞區間開始前 30 秒的眼動分佈圖" width="49%">
-  <img src="docs/images/fatigue_segment_pre30_alpha_distribution.png" alt="疲勞區間開始前 30 秒的 α 波分佈圖" width="49%">
-</p>
-
-#### 疲勞區間開始前 29 秒
-
-<p align="center">
-  <img src="docs/images/fatigue_segment_pre29_eye_distribution.png" alt="疲勞區間開始前 29 秒的眼動分佈圖" width="49%">
-  <img src="docs/images/fatigue_segment_pre29_alpha_distribution.png" alt="疲勞區間開始前 29 秒的 α 波分佈圖" width="49%">
-</p>
-
-#### 疲勞區間開始前 25 秒
-
-<p align="center">
-  <img src="docs/images/fatigue_segment_pre25_eye_distribution.png" alt="疲勞區間開始前 25 秒的眼動分佈圖" width="49%">
-  <img src="docs/images/fatigue_segment_pre25_alpha_distribution.png" alt="疲勞區間開始前 25 秒的 α 波分佈圖" width="49%">
-</p>
-
-#### 疲勞區間開始前 15 秒
-
-<p align="center">
-  <img src="docs/images/fatigue_segment_pre15_eye_distribution.png" alt="疲勞區間開始前 15 秒的眼動分佈圖" width="49%">
-  <img src="docs/images/fatigue_segment_pre15_alpha_distribution.png" alt="疲勞區間開始前 15 秒的 α 波分佈圖" width="49%">
-</p>
-
-#### 疲勞區間開始前 5 秒
-
-<p align="center">
-  <img src="docs/images/fatigue_segment_pre5_eye_distribution.png" alt="疲勞區間開始前 5 秒的眼動分佈圖" width="49%">
-  <img src="docs/images/fatigue_segment_pre5_alpha_distribution.png" alt="疲勞區間開始前 5 秒的 α 波分佈圖" width="49%">
-</p>
-
 ## 實驗結果
 
 ### 單一訊號偵測效能
@@ -276,14 +229,6 @@ python -m eeg_analysis.driving_state.predict_algorithm
 ```
 
 介面需選擇事件 Excel、α 波 DAT 與眼動 DAT，可檢視事件切片、整體趨勢，以及預測與實際駕駛狀態的比較。
-
-### 比較清醒與非清醒的眼動分布
-
-```powershell
-python -m eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.plot_first_fatigue_awake_eye_distributions
-```
-
-工具讀取 `data/first_fatigue/detection_first_fatigue.xlsx` 的「來源檔案」與「清醒」標註。清醒資料取開始後窗口結束秒 `30, 40, ..., 300` 的 30 秒眼動累積值；非清醒資料同樣從 30 秒起每 10 秒取樣，僅保留首次 `事件反應時間 > 1.6 秒` 之前或第 300 秒以前的窗口，以較早者為準。輸出圖表與逐窗口明細會存入 `data/first_fatigue/output/`。
 
 更完整的資料格式、各工具的輸入輸出與已知限制，請參考 [docs/目錄整理說明.md](docs/目錄整理說明.md)。
 
