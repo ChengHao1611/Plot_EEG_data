@@ -228,3 +228,6 @@ data/
 # datasets/
 
 tests
+!tests/
+tests/*
+!tests/test_ab_spectrum_analysis.py
