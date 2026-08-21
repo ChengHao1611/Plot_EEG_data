@@ -1,237 +1,322 @@
-# 基於 EEG 與眼動訊號之疲勞駕駛預測系統
+# 基於 EEG 與眼動訊號之疲勞駕駛預測演算法
 
-> Fatigue Driving Prediction System Based on EEG and Eye-Movement Signals
+> A Drowsy Driving Prediction Algorithm Based on EEG and Eyeblink Signals
 
-本專題利用駕駛者的反應時間、眼動訊號與 EEG Alpha 訊號，建立一套個人化疲勞駕駛預測系統。系統先利用開始駕駛後前 300 秒的反應時間，判斷駕駛者目前是否已經疲勞；若尚未疲勞，則使用這 300 秒建立個人化基準，並在 300 秒後持續分析眼動與 Alpha 訊號，以預測接下來發生的第一個疲勞事件，期望在反應時間明顯變慢以前提供警示。
+作者：許成豪（Cheng-Hao Xu）、潘亮銓（Liang-Chuan Pan）<br>
+國立成功大學資訊工程學系<br>
+指導教授：梁勝富
 
-指導教授：梁勝富<br>
-專題成員：許成豪、潘亮銓
+本文件分為兩個部分：[第一部分](#第一部分研究介紹)以論文架構說明研究背景、方法與結果；[第二部分](#第二部分repository-使用方式)說明如何安裝、執行及延伸本 repository。
 
-## 研究背景與動機
+---
 
-常見的疲勞駕駛偵測方法包括影像辨識、車輛偏移分析，以及 EEG θ 波偵測，但各有侷限：
+## 第一部分：研究介紹
 
-- 影像辨識容易受眼鏡、口罩與環境光線變化影響。
-- 車輛偏移通常須在車輛已出現明顯偏移後才能警示。
-- θ 波多用於辨識已明顯疲勞或接近睡眠的狀態，較難提前預測。
+### 摘要
 
-因此，本研究將系統分成兩個功能：第一個功能確認駕駛者現在是否適合繼續駕駛；第二個功能則在駕駛者通過初始檢查後，利用個人化眼動與 Alpha 特徵，預測 300 秒後的第一個疲勞事件。
+疲勞駕駛對道路安全造成重大威脅，然而影像辨識與車輛偏移等常見方法，多半在駕駛者已出現明顯疲勞行為後才發出警示。本研究提出一套結合腦電圖（Electroencephalography, EEG）Alpha 波與眼動／眨眼（eyeblink）訊號的兩階段疲勞駕駛預測演算法，期望在行為性疲勞發生前提供預警。
 
-## 系統目標
+第一階段利用駕駛開始後前 300 秒的車道偏移反應時間（Reaction Time, RT）進行安全篩檢，排除已呈現高風險疲勞狀態的資料，並為通過篩檢的駕駛者建立個人化 RT 基準。第二階段自第 301 秒起，以 30 秒眼動與 Alpha 特徵窗口持續評估生理疲勞，並與第一個 Local／Global RT 或 Critical Lapse 行為 onset 比較，以計算是否成功預測及提前時間。
 
-### 功能一：確認目前能否繼續駕駛
+論文原稿報告的 12 筆訓練資料中，有 5 筆在第一階段被判定為高風險並排除；其餘 7 筆中有 6 筆成功在行為性疲勞前發出警報，成功率為 85.7%。這些數字來自先前使用 60 秒重複 RT 事件與個人化 Alpha Power 中位數門檻的版本；目前程式已改用 Local／Global RT 與 Critical Lapse，並移除 Alpha 個人化門檻，須重新執行資料分析後才能更新成效數字。
 
-系統觀察前 300 秒的車道偏移事件與 Reaction Time。Reaction Time 定義為車輛開始偏移至駕駛者開始導正之間的時間，並以一般四捨五入記錄至小數點第一位；當 Reaction Time 大於或等於 1.6 秒時，記為一個疲勞事件。出現第一個疲勞事件後，系統從下一個反應事件開始建立 60 秒窗口；如果窗口內又出現一個疲勞事件，就判定駕駛者已經疲勞，輸出禁止駕駛結果，不再進入後續預測流程。
+**關鍵詞：** 疲勞駕駛、腦電圖、Alpha 波、眼動、眨眼、反應時間、個人化預警
 
-### 功能二：預測第一個疲勞事件
+### 1. 緒論
 
-若駕駛者通過功能一，系統會利用前 300 秒建立個人化 Reaction Time 與 Alpha Power baseline，Alpha採用符合頻帶優勢條件之Power中位數。從第 301 秒開始，系統每秒更新最近 30 秒的眼動累積值與最近 10 秒的 Alpha 特徵累積值；當 `EyeWindow30 < 10` 或 `AlphaWindow10 >= 3` 任一條件成立時即發出警報。功能二只評估第300秒後第一個個人化RT疲勞事件；當該事件發生後，這筆資料的預測流程即結束。
+疲勞會降低駕駛者的注意力、反應速度與車輛控制能力，是重大交通事故的重要風險因子。現有疲勞偵測方法常使用臉部或眼部影像、車輛軌跡，或 EEG 中與嗜睡相關的頻帶特徵，但仍存在若干限制：影像辨識容易受到眼鏡、口罩、姿勢與環境光線影響；車輛偏移分析通常要等到操控表現已經惡化；接近睡眠時才明顯出現的生理特徵，也較難滿足提前預測的需求。
 
-## 系統流程
+為改善上述問題，本研究以模擬駕駛中的 RT 作為行為性疲勞依據，並以 FP2 通道取得眼動及 EEG 頻帶特徵。研究的主要設計包括：
+
+1. 先以短期行為資料判斷駕駛者是否已處於不適合繼續駕駛的狀態。
+2. 對通過初始篩檢者建立個人化 RT 基準，降低反應時間的個體差異。
+3. 結合眼動減少與 Alpha 特徵增加兩種生理變化，在行為反應明顯變慢前發出警報。
+
+### 2. 研究方法
+
+#### 2.1 資料集
+
+本研究使用 Cao 等人公開的 *Multi-channel EEG Recordings During a Sustained-Attention Driving Task* 資料集。資料包含模擬持續注意力駕駛任務中的 32 通道 EEG 與車道偏移反應紀錄，可用於比較生理訊號變化與駕駛行為表現。
+
+論文原稿的資料集段落記載選用 14 筆受試者資料；摘要與結果段落目前則針對 12 筆訓練資料報告成效。因此，本 README 的實驗結果採用原稿已明列的 12 筆統計，兩者的資料納入條件仍應在正式投稿版本中統一。
+
+#### 2.2 疲勞事件定義
+
+RT 定義為車輛開始偏移至駕駛者開始導正之間的時間。系統使用 EDF `Status` 通道中的 251／252 表示偏移開始、253 表示導正開始、254 表示導正完成；事件時間向上取整至整秒，RT 則以一般四捨五入記錄至小數點第一位。
+
+為建立行為性疲勞標準，本研究分析車輛橫跨一個車道所需時間，並由模擬 100 km/h 的結果換算至 60 km/h。多數事件約落在 1.5 秒，因此第一階段採用固定 RT 門檻：
+
+```text
+Phase 1 RT threshold = 1.6 秒
+```
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/vehicle_position.png" alt="模擬駕駛中的車輛位置" width="100%"></td>
+    <td width="50%"><img src="docs/images/status_reaction_over_1_60kmh_distribution.png" alt="換算至 60 km/h 的車道跨越時間分布" width="100%"></td>
+  </tr>
+</table>
+
+圖 1．模擬駕駛中的車輛位置，以及換算至 60 km/h 後的車道跨越時間分布。
+
+#### 2.3 第一階段：安全篩檢與個人化 RT 基準
+
+系統先檢查前 300 秒的 RT 事件。每個事件的 Local RT 是該次反應時間；Global RT 則是事件整數秒 `s` 往前 90 秒至當次事件的 Local RT 平均，即納入 `s - 90 <= event_second <= s` 且截至當次已經發生的事件。Global RT 包含目前事件，不會納入同一整數秒中尚未發生的後續事件。
+
+前 90 秒因尚未累積完整時間窗口，不判定 Local／Global 持續疲勞；自第 90 秒起，Local RT 與 Global RT 均大於或等於 1.6 秒才判定持續疲勞。此外，任何 `Local RT >= 3.2` 秒的事件均定義為 Critical Lapse，可在前 90 秒暖機期直接觸發。前 300 秒只要出現持續疲勞或 Critical Lapse，就排除該筆 recording，不進入第二階段。
+
+未達上述條件者可進入第二階段，並以其前 300 秒 RT 資料建立下列個人化基準：
+
+- RT 平均數與中位數。
+- 個人化 RT 疲勞門檻：`min(1.6, ceil_0.1(RT 平均數 × 1.5))`；`ceil_0.1` 表示向上取至小數第一位。
+
+#### 2.4 眼動與 Alpha 特徵擷取
+
+眼動與 EEG 頻帶特徵均取自 FP2 通道。眼動訊號先經 0.1–10 Hz 零相位濾波，再以訊號中位數與 MAD 建立動態高度門檻；候選峰值還必須符合局部最大值與 peak-to-shoulder 落差大於 70 μV 的條件。系統以偵測到眼動的「秒數」作為後續窗口統計單位。
+
+Alpha 特徵先以 1–30 Hz 濾波，再對每個完整的一秒訊號執行 FFT，計算 Theta（4–7 Hz）、Alpha（8–12 Hz）與 Beta（13–20 Hz）的 Power。偵測到眼動的秒數會排除於 EEG 頻譜判定之外；其餘秒數只要符合 `Alpha > Theta` 且 `Alpha > Beta`，便記為一個 Alpha 特徵秒。功能二會以相同條件分析第 1 秒至分析終點，不再建立或套用個人化 Alpha Power 門檻。
+
+![眼動訊號與事件標記](docs/images/event.png)
+
+圖 2．FP2 眼動訊號與事件標記範例。
+
+#### 2.5 第二階段：第一個疲勞事件預測
+
+系統沿用前 300 秒資料初始化滑動窗口，並自第 301 秒起逐秒更新下列特徵：
+
+- `EyeWindow30`：最近 30 秒偵測到眼動的秒數。
+- `AlphaWindow30`：最近 30 秒符合 `Alpha > Theta` 且 `Alpha > Beta` 的非眼動秒數。
+
+兩個窗口分別使用前 300 秒建立的 robust median 與 scale 轉成 `Z_Eye` 及 `Z_Alpha`，其中眼動減少是疲勞方向，因此反轉符號。Scale 優先使用該筆資料的 MAD，其次使用 IQR；兩者皆為 0 時，使用已凍結的訓練 pooled fallback 常數：Alpha `1.4826`、Eye `4.4478`。`function_two` 執行時不會為了取得這兩個值重新掃描 `train_data`，但仍可用 `--pooled-alpha-scale` 與 `--pooled-eye-scale` 覆寫。生理疲勞分數與正式警報條件為：
+
+```text
+Z_Alpha >= 0.8 且 Z_Eye >= 0.8
+上述兩項同時連續成立 4 秒
+```
+
+第二階段沿用第一階段的 RT 歷史建立 90 秒 Global RT，不會在第 301 秒重新暖機。第 300 秒後，第一個同時符合 `Local RT >= 個人化門檻` 與 `Global RT >= 個人化門檻` 的事件，或第一個 `Local RT >= 3.2` 秒的 Critical Lapse，定義為 Behavioral Fatigue Onset。系統保留 `LOCAL_AND_GLOBAL`、`CRITICAL_LOCAL_RT` 或 `SUSTAINED_AND_CRITICAL` 觸發原因，記錄第一次生理警報，並以「onset 時間減去第一次警報時間」計算提前秒數；第一個目標事件發生後，即停止該筆資料的預測流程。
 
 ```text
 開始駕駛
    │
    ▼
-前 300 秒：以 Reaction Time 判斷目前是否疲勞
-   │
-   ├─ 出現疲勞事件後，從下一個反應事件起算的 60 秒內又出現疲勞事件
-   │      └─ 判定已疲勞 → 禁止駕駛 → 結束
-   │
-   └─ 未達疲勞條件
+前 300 秒 RT 安全篩檢
+   ├─ 前 90 秒 Local RT >= 3.2 → Critical Lapse／停止
+   ├─ 90～300 秒 Local 與 Global RT 均 >= 1.6 → 高風險／停止
+   ├─ 任一事件 Local RT >= 3.2 → Critical Lapse／停止
+   └─ 通過篩檢
           │
           ▼
-建立個人化 Baseline
-├─ Reaction Time Baseline
-├─ 眼動 Baseline
-└─ Alpha Power Baseline
+建立個人化 RT 基準
           │
           ▼
-第 301 秒開始每秒分析
-├─ 眼動：30 秒 sliding window
-└─ Alpha：10 秒 sliding window
+第 301 秒起逐秒更新
+├─ EyeWindow30
+└─ AlphaWindow30
           │
           ▼
-EyeWindow30 < 10 或 AlphaWindow10 >= 3
+Z_Alpha與Z_Eye皆 >= 0.8，連續 4 秒
           │
           ▼
-預測 300 秒後的第一個疲勞事件
-          │
-          ├─ 提前發出警告
-          └─ 未成功預測
-          │
-          ▼
-第一個疲勞事件發生 → 計算是否命中及提前秒數 → 結束
+發出警報，並與第一個 Local+Global 或 Critical Lapse onset 比較
 ```
 
-## 系統輸入與輸出
+### 3. 實驗結果
 
-### 輸入
+下表保留論文原稿中使用個人化 Alpha Power 中位數門檻所得的訓練資料結果，僅供追溯；目前非個人化 Alpha 實作的結果尚待重新執行實驗後更新：
 
-- EDF 格式的多通道 EEG 與 Status 訊號。
-- FP2 通道的眼動與 EEG 訊號。
-- 車道偏移開始時間與駕駛者開始導正時間，用來計算 Reaction Time。
+| 評估項目 | 結果 |
+| --- | ---: |
+| 納入結果統計的訓練資料 | 12 筆 |
+| 第一階段判定高風險並排除 | 5 筆 |
+| 進入第二階段 | 7 筆 |
+| 成功提前預警 | 6 筆 |
+| 提前預警成功率 | 85.7% |
+| 成功案例提前時間 | 67–482 秒 |
+| 提前時間中位數 | 121.5 秒 |
 
-### 輸出
+其中一筆代表性資料在第 549 秒出現第一次生理警報，行為性疲勞則於第 821 秒發生，提前時間為 272 秒。這些結果屬於訓練資料上的初步驗證，尚不能視為獨立測試集上的泛化效能。
 
-- 功能一結果：允許繼續駕駛或禁止駕駛。
-- 個人化 Reaction Time、眼動與 Alpha Power baseline。
-- 個人化疲勞門檻：`min(1.6, RT baseline × 1.5)`。
-- 300 秒後第一個疲勞事件的預測警告時間。
-- 是否成功預測第一個疲勞事件，以及成功時可提前多少秒。
+### 4. 討論與結論
 
-## 訊號與特徵摘要
+論文原稿結果顯示，在以 RT 排除初始高風險駕駛者後，眼動減少與 Alpha 特徵增加具有辨識行為性疲勞前生理變化的潛力。目前實作仍保留個人化 RT 門檻，但 Alpha 改為只使用頻帶優勢條件；移除 Alpha 個人化後的警報時間、成功率與誤報率需要重新評估。
 
-- **Reaction Time**：車輛開始偏移至駕駛者開始導正之間的時間。
-- **眼動訊號**：FP2 經 0.1–10 Hz 濾波後偵測眼動，每秒更新最近 30 秒的眼動累積次數。
-- **EEG 頻帶**：FP2 經 1–30 Hz 濾波後，以每秒 FFT 計算 Theta（4–7 Hz）、Alpha（8–12 Hz）與 Beta（13–20 Hz）Power。
-- **眼動排除**：偵測到眼動的秒數不進行 EEG 頻譜分析。
-- **Alpha 特徵**：個人baseline使用前300秒合格Alpha Power的中位數。當 Alpha Power 同時大於 Theta Power、Beta Power及該中位數時，記錄該秒出現Alpha特徵，再以10秒sliding window累積。
-- **功能二警報**：`EyeWindow30 < 10` 或 `AlphaWindow10 >= 3` 任一條件成立即觸發，並分別記錄眼動、Alpha或兩者共同觸發。
-- **個人化疲勞事件**：300 秒後以 `min(1.6, RT baseline × 1.5)` 作為該駕駛者的 Reaction Time 疲勞門檻。
+目前研究仍受限於樣本數較少、結果來自訓練資料、僅使用 FP2 通道，以及固定窗口與警報門檻可能不適合所有駕駛者。後續工作應統一資料納入數量、加入獨立測試或交叉驗證、分析誤報率，並評估更多 EEG 通道與生理／車輛特徵，以提升模型的穩健性與實際部署價值。
 
-## 資料集與實驗設計
+### 參考文獻
 
-本研究使用持續注意力駕駛任務中的多通道 EEG 紀錄，將資料分為 **14 筆訓練資料**與 **9 筆測試資料**。訓練資料用來觀察第一個疲勞事件發生前的眼動與 Alpha 變化，並建立及調整預測規則；規則確定後，再使用測試資料進行最終驗證。
+[1] M. J. Flores, J. M. Armingol, and A. de la Escalera, “Driver drowsiness detection system under infrared illumination for an intelligent vehicle,” *IET Intelligent Transport Systems*, vol. 5, no. 4, pp. 241–251, 2011.
 
-```text
-23 筆 EEG 駕駛資料
-   ├─ 14 筆訓練資料 → 建立及調整疲勞預測規則
-   └─  9 筆測試資料 → 驗證第一個疲勞事件的預測效能
-```
+[2] Z. Cao, C.-H. Chuang, J.-K. King, et al., “Multi-channel EEG recordings during a sustained-attention driving task,” *Scientific Data*, vol. 6, article 19, 2019.
 
-原始 EEG 資料位於 `data/raw_edf/`；特徵表、分析結果與圖表則依功能放置於 `data/`、`eeg_analysis/` 與 `tools/`。
+---
 
-## 實驗方法
+## 第二部分：Repository 使用方式
 
-### 1. 制定疲勞事件標準
+### 1. 執行環境
 
-參考陽明交通大學資料集的實驗設定：道路兩側距離與車輛軌跡均以 0–255 量化；每個車道寬度為 60 單位，共有 4 個車道。實驗場景的更新率則對應模擬 **100 km/h** 的行駛速度。
-
-本研究先統計 9 筆資料中，車輛在 100 km/h 模擬速度下橫跨一個車道所需的時間，再換算為 **60 km/h** 下的橫跨時間。結果顯示，多數事件約落在 **1.5 秒**，因此將其作為反應時間的參考值。
-
-<table>
-  <tr>
-    <td width="50%" rowspan="2" valign="middle">
-      <img src="docs/images/event.png" alt="眼動訊號與事件標記" width="100%">
-    </td>
-    <td width="50%">
-      <img src="docs/images/vehicle_position.png" alt="車輛位置圖" width="100%">
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="docs/images/status_reaction_over_1_60kmh_distribution.png" alt="60 km/h 車道跨越時間分佈圖" width="100%">
-    </td>
-  </tr>
-</table>
-
-左圖為眼動訊號與事件標記；右上為車輛位置範例；右下為換算成 60 km/h 後的車道跨越時間分佈。
-
-為了將邊界值與疲勞事件區分，後續分析採用下列定義：
-
-- **疲勞事件**：反應時間 ≥ **1.6 秒**。
-
-
-### 2. α 波偵測
-
-α 波偵測使用未經處理的 EEG 資料，選取 FP1 與 FP2 通道後，依序進行 **1 Hz 高通濾波**與 **30 Hz 低通濾波**。每秒訊號經快速傅立葉轉換（FFT）後，以下列條件判定為 α 波：
-
-```text
-1. 在 1–30 Hz 範圍內的最高頻譜峰值，位於 8–12 Hz。
-2. 該最高峰的振幅大於 1500。
-```
-
-![s01_060926_1n 的 α 波能量分佈](docs/images/s01_060926_1n_alpha_energy_normal_distribution.png)
-
-圖：資料 `s01_060926_1n` 的 FP2 通道經 FFT 後，最高峰位於 8–12 Hz 時的振幅分佈。
-
-### 3. 眼動訊號偵測
-
-眼動訊號同樣使用未經處理的 EEG 資料，選取 FP1 與 FP2 通道後，進行 **0.1 Hz 高通濾波**與 **10 Hz 低通濾波**。判定條件如下：
-
-```text
-在 0.7 秒內，訊號峰值與谷值的差異 ≥ 70 μV。
-```
-
-![s01_060926_1n 的眼動峰谷差分佈](docs/images/eye_movement_peak_distribution.png)
-
-圖：資料 `s01_060926_1n` 的 FP2 通道眼動訊號峰值與谷值差異分佈。
-
-## 實驗結果
-
-### 單一訊號偵測效能
-
-| 訊號 | Precision | Recall |
-| --- | ---: | ---: |
-| 眼動偵測 | 90% | 70% |
-| α 波偵測 | 90% | 90% |
-
-### 疲勞預測效能
-
-以 9 筆資料進行評估時，疲勞事件的偵測率（Recall）為 **57%**，預測準確率（Precision）為 **65%**。
-
-| 評估資料 | 疲勞事件偵測率（Recall） | 預測準確率（Precision） |
-| --- | ---: | ---: |
-| 訓練 9 筆 | 57% | 65% |
-
-## 專案結構
-
-```text
-├─ data/
-│  └─ raw_edf/                         # EEG 與輔助原始 EDF 資料
-├─ eeg_analysis/
-│  ├─ detection/                       # α 波與眼動自動偵測
-│  ├─ driving_state/                   # 駕駛狀態分析 GUI
-│  ├─ fatigue_driving_prediction_system/
-│  │                                    # 整合式疲勞駕駛預測系統
-│  ├─ alpha_validation/                # α 波人工標註驗證
-│  ├─ eye_movement/                    # 眼動驗證與分布分析
-│  └─ statistics_30s_alpha_eyeblink_of_fatigue/
-│                                       # 疲勞事件前訊號統計
-├─ tools/
-│  └─ fatigue_time_analysis/           # 車道偏移與反應時間分析工具
-└─ docs/目錄整理說明.md                 # 完整目錄、輸入與輸出說明
-```
-
-## 使用方式
-
-以下指令需在專案根目錄執行，並先安裝程式所需的 Python 套件，例如 `mne`、`numpy`、`pandas`、`matplotlib` 與 `openpyxl`。
-
-### 執行功能一
+建議使用 Python 3.10 以上版本，並在專案根目錄建立虛擬環境：
 
 ```powershell
-python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file data/raw_edf/eeg/s11_060920_1n_raw.edf
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install mne numpy pandas matplotlib openpyxl pyedflib scipy
 ```
 
-功能一讀取 EDF 的 Status 與 FP2 通道，以 Status 251／252 作為車輛偏移開始、253 作為導正開始，並將事件時間向上取整至第 1～300 秒。出現第一個 `Reaction Time >= 1.6` 秒事件後，從下一個反應事件起算 60 秒；若窗口內又出現疲勞事件，就輸出疲勞結果，否則建立 Reaction Time 與 Alpha Power 的平均及中位數 baseline，並自動進入功能二。若只想執行功能一，可加上 `--function-one-only`。
+圖形介面使用 Tkinter；Windows 的一般 Python 安裝通常已包含 Tkinter，其他作業系統可能需要另外安裝對應的 `tk` 套件。
 
-### 執行功能二
+### 2. 輸入資料
+
+主要流程接受 EDF 格式的多通道訊號，至少需要：
+
+- `FP2`：眼動與 EEG 頻帶分析。
+- `Status`：解析車道偏移及導正事件。
+- `Status` 事件碼：251／252 為偏移開始、253 為導正開始、254 為導正完成。
+
+建議將一般 EEG 放在 `data/raw_edf/eeg/`。含 `vehicle position` 通道的輔助 EDF 可放在 `data/raw_edf/auxiliary/`，供車道跨越時間工具使用。
+
+專案中的 DAT 採逗號分隔格式；第一個整數是事件筆數，其餘整數是事件發生秒數：
+
+```text
+3,15,48,120
+```
+
+### 3. 快速開始：批次執行 train_data
+
+請在 repository 根目錄執行：
+
+```powershell
+python -m eeg_analysis.fatigue_driving_prediction_system.function_two
+```
+
+不帶 `--file` 時，程式會讀取 repository 根目錄的 `train_data`，依清單順序在 `data/raw_edf/eeg/` 中遞迴尋找 `<record_id>_raw.EDF`，逐筆執行 Phase 1 與 Phase 2。每筆資料使用獨立輸出資料夾：
+
+```text
+data/derived/fatigue_driving_prediction_system/<record_id>/
+```
+
+即使某筆資料未通過 Phase 1，仍會匯出該筆 `function_two_results.xlsx`，並將 Phase 2 狀態記為 `SKIPPED_FUNCTION_ONE_NOT_PASSED`。單筆找不到EDF或分析失敗時會記錄錯誤並繼續下一筆；全部處理後另輸出：
+
+```text
+data/derived/fatigue_driving_prediction_system/training_batch_results.xlsx
+```
+
+可用參數指定其他清單、EDF資料夾或輸出根目錄：
+
+```powershell
+python -m eeg_analysis.fatigue_driving_prediction_system.function_two `
+  --manifest <train_data路徑> `
+  --edf-dir <EDF資料夾> `
+  --results-root <批次輸出資料夾>
+```
+
+### 4. 分析單一 EDF
 
 ```powershell
 python -m eeg_analysis.fatigue_driving_prediction_system.function_two --file data/raw_edf/eeg/s11_060920_1n_raw.edf
 ```
 
-功能二的獨立入口會先執行功能一；只有功能一判定為非疲勞時才繼續。功能二沿用前300秒資料初始化窗口，從第301秒起以 `EyeWindow30 < 10 OR AlphaWindow10 >= 3` 發出警報，並在第一個個人化RT疲勞事件停止。`eyeblink_function_two.dat`與`Alpha_function_two.dat`涵蓋第1秒至功能二分析終點，其中前300秒沿用功能一結果，301秒後接續功能二結果；另輸出`function_two_results.xlsx`及`function_two_pre_fatigue_30s.png`。若第300秒後沒有疲勞事件，則不產生疲勞前30秒圖。
+`--file` 會切換回單筆模式，但仍依序執行並匯出 Phase 1、Phase 2。可搭配 `--output-dir <資料夾>` 指定該筆輸出位置。第二階段需要第一階段建立個人化 RT 與 robust 生理基準；只有 Phase 1 通過且所需 baseline 有效時，才會從第 301 秒進行完整 Phase 2 分析。
 
-### 偵測 α 波與眼動訊號
+若只要執行 Phase 1，可使用：
+
+```powershell
+python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file data/raw_edf/eeg/s11_060920_1n_raw.edf --function-one-only
+```
+
+### 5. 主要輸出
+
+| 檔案 | 說明 |
+| --- | --- |
+| `training_batch_results.xlsx` | train_data每筆資料的EDF路徑、Phase 1／2狀態、行為onset、生理警報、提前時間與錯誤摘要。 |
+| `reaction_time_events.xlsx` | 從 EDF 擷取的 RT 事件。 |
+| `function_one_results.xlsx` | 第一階段逐事件 Local／Global RT、Critical Lapse、觸發原因與個人化 RT baseline。 |
+| `rt_validation.png` | 前 300 秒 Local／Global RT、90 秒暖機期、固定門檻與 3.2 秒 Critical 門檻。 |
+| `eyeblink.dat` | 第一階段偵測到的眼動秒數。 |
+| `eyeblink_function_two.dat` | 從第 1 秒至第二階段終點的眼動秒數。 |
+| `Alpha_function_two.dat` | 從第 1 秒至第二階段終點，符合頻帶優勢條件的非眼動 Alpha 秒數。 |
+| `function_two_results.xlsx` | 第二階段摘要、逐秒生理特徵及第 300 秒後逐事件 Local／Global RT 與觸發原因。 |
+| `behavioral_rt_debug.png` | 兩階段 Local RT、Global RT、active threshold、Critical threshold 與 Phase 2 onset。 |
+| `function_two_pre_fatigue_90s.png` | 第一個疲勞事件前 90 秒的眼動、Alpha 與標準化分數圖；沒有目標事件時不產生。 |
+
+### 6. 單獨偵測眼動與 Alpha
 
 ```powershell
 python -m eeg_analysis.detection.detect_alpha_and_eyeblink --file data/raw_edf/eeg/s01_061102n_raw.EDF
 ```
 
-程式會在 EDF 所在資料夾產生 `Alpha.dat` 與 `eyeblink.dat`。
+程式會在 EDF 所在資料夾產生 `eyeblink.dat` 與 `Alpha.dat`。如果已有眼動 DAT，亦可單獨執行 Alpha 偵測並排除眼動秒數：
 
-### 啟動駕駛狀態分析介面
+```powershell
+python -m eeg_analysis.detection.record_alpha --file <EDF路徑> --eye-dat <眼動DAT路徑> --end-second 300
+```
+
+### 7. 啟動駕駛狀態分析介面
+
+舊版三模式介面：
 
 ```powershell
 python -m eeg_analysis.driving_state.predict_algorithm
 ```
 
-介面需選擇事件 Excel、α 波 DAT 與眼動 DAT，可檢視事件切片、整體趨勢，以及預測與實際駕駛狀態的比較。
+在介面中選擇事件 Excel、Alpha DAT 與眼動 DAT，即可檢視事件切片、整體趨勢，以及預測狀態與實際駕駛狀態的比較。事件 Excel 至少需要 `second` 與 `react_time` 兩個英文欄位。
 
-更完整的資料格式、各工具的輸入輸出與已知限制，請參考 [docs/目錄整理說明.md](docs/目錄整理說明.md)。
+與 `function_two` 共用目前判定標準的 Observe 介面：
 
-## 限制與後續方向
+```powershell
+python -m eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.observe
+```
 
-目前結果顯示，系統可從 α 波與眼動訊號中辨識部分疲勞事件，但疲勞預測的 Precision 與 Recall 仍有改善空間。後續可針對不同駕駛者調整個人化門檻，並加入更多資料與特徵，以降低誤報率、提升預測穩定性。
+Observe 會將事件秒數向上取整、Local RT 以一般四捨五入取至小數第一位；個人化 RT 門檻由使用者在介面手動輸入，不會從前 300 秒自動計算。Pooled Alpha／Eye scale 也由介面輸入，預設帶入與 `function_two` 相同的 `1.4826`／`4.4478`，Observe 執行時不會讀取 `train_data`。行為疲勞從整段 recording 開始搜尋：Global RT 使用包含當次事件的 `[s-90, s]`，以 `>=` 比較 Local／Global 手動門檻，另由 `Local RT >= 3.2` 直接觸發 Critical Lapse；若第一次觸發在前 300 秒（含），圖上只顯示 Phase 1 行為疲勞、累積特徵與 RT，不顯示 Phase 2、生理疲勞標記或下方生理判定圖。圖表時間顯示至 `min(第一次行為疲勞時間 + 500秒, recording總時間)`，沒有行為疲勞時顯示完整時間。結果圖與逐秒除錯 Excel 會輸出至 `eeg_analysis/statistics_30s_alpha_eyeblink_of_fatigue/data/observe/`。
+
+### 8. 驗證與分析工具
+
+```powershell
+# Alpha 自動偵測與人工標註比較
+python -m eeg_analysis.alpha_validation.alpha_validation data/raw_edf/eeg/s01_061102n_raw.EDF
+
+# 眼動自動偵測與人工標註比較，並輸出分布圖
+python -m eeg_analysis.eye_movement.eye_movement_validation --file data/raw_edf/eeg/s01_061102n_raw.EDF --distribution
+
+# 檢視 EDF 標頭
+python -m tools.fatigue_time_analysis.view_edf_header data/raw_edf/auxiliary/s01_060926_1n_car_position.EDF --header-only
+
+# 分析車道跨越事件
+python -m tools.fatigue_time_analysis.analyze_lane_crossing_events data/raw_edf/auxiliary/s01_060926_1n_car_position.EDF -o data/derived/new_lane_crossing_analysis.xlsx
+```
+
+### 9. 專案結構
+
+```text
+├─ data/
+│  ├─ raw_edf/                         # EEG 與輔助原始 EDF
+│  └─ derived/                         # 分析產生的 Excel、DAT 與圖表
+├─ docs/
+│  ├─ images/                          # README 與研究說明圖片
+│  └─ 目錄整理說明.md                  # 完整輸入、輸出及工具說明
+├─ eeg_analysis/
+│  ├─ common/filters/                  # 共用訊號濾波器
+│  ├─ detection/                       # Alpha 與眼動自動偵測
+│  ├─ fatigue_driving_prediction_system/
+│  │                                  # 兩階段疲勞駕駛預測流程
+│  ├─ alpha_validation/                # Alpha 人工標註驗證
+│  ├─ eye_movement/                    # 眼動驗證與分布分析
+│  ├─ driving_state/                   # 駕駛狀態分析 GUI
+│  └─ statistics_30s_alpha_eyeblink_of_fatigue/
+│                                     # 疲勞事件前的窗口特徵統計
+├─ tests/                              # 自動化測試
+└─ tools/
+   ├─ fatigue_time_analysis/           # 車道偏移與反應時間工具
+   └─ experiments/                     # 實驗性／原型程式
+```
+
+### 10. 使用注意事項
+
+- 所有 `python -m ...` 指令都應從 repository 根目錄執行。
+- 主要兩階段流程要求 EDF 同時包含 `FP2` 與 `Status`；缺少必要通道時會停止執行。
+- 第一階段若沒有可用 RT 事件、無法建立 RT baseline，或判定為疲勞，第二階段不會執行。
+- 自動偵測輸出的 `Alpha.dat`、`eyeblink.dat` 與人工標註檔可能採不同命名方式，執行驗證工具前請確認路徑與檔名。
+- 目前論文結果為訓練資料上的初步結果；本程式適合研究與離線分析，不應直接作為實際道路安全決策系統。
+
+各模組的完整參數、輸入輸出格式與已知限制，請參考 [docs/目錄整理說明.md](docs/目錄整理說明.md)。

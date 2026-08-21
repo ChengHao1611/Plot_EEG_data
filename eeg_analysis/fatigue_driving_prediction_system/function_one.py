@@ -1,4 +1,4 @@
-"""Function One: initial 300-second fatigue screening and baseline export."""
+"""Function One: initial 300-second fatigue screening and RT baseline export."""
 
 from __future__ import annotations
 
@@ -28,8 +28,26 @@ import mne
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from eeg_analysis.detection.record_alpha import AlphaDetectionResult, detect_alpha
 from eeg_analysis.detection.record_arousal import detect_eye_movements
+from eeg_analysis.detection.record_alpha import detect_alpha
+from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
+    BehavioralFatigueEvaluation,
+    CRITICAL_LOCAL_RT_THRESHOLD,
+    GLOBAL_RT_WINDOW_SECONDS,
+    PERSONALIZED_RT_MULTIPLIER,
+    PHASE_ONE_DURATION_SECONDS,
+    PHASE_ONE_RT_THRESHOLD,
+    calculate_personalized_rt_threshold,
+    evaluate_behavioral_fatigue_events,
+    first_behavioral_fatigue,
+)
+from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import (
+    RobustBaseline,
+    TRAINING_POOLED_ALPHA_SCALE,
+    TRAINING_POOLED_EYE_SCALE,
+    compute_robust_baseline,
+    rolling_event_counts,
+)
 from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eyeblink_to_xlsx import (
     ReactionTimeEvent,
     extract_reaction_time_events,
@@ -40,10 +58,14 @@ from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eye
 @dataclass(frozen=True)
 class FunctionOneConfig:
     baseline_start_second: int = 1
-    baseline_end_second: int = 300
-    fatigue_reaction_threshold: float = 1.6
-    fatigue_window_seconds: int = 60
-    personalized_multiplier: float = 1.5
+    baseline_end_second: int = PHASE_ONE_DURATION_SECONDS
+    fatigue_reaction_threshold: float = PHASE_ONE_RT_THRESHOLD
+    global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
+    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD
+    personalized_multiplier: float = PERSONALIZED_RT_MULTIPLIER
+    physiological_window_seconds: int = 30
+    pooled_alpha_scale: float = TRAINING_POOLED_ALPHA_SCALE
+    pooled_eye_scale: float = TRAINING_POOLED_EYE_SCALE
 
 
 DEFAULT_CONFIG = FunctionOneConfig()
@@ -55,13 +77,15 @@ class FunctionOneResult:
     decision: str
     allow_driving: bool
     events: tuple[ReactionTimeEvent, ...]
-    trigger_pair: tuple[ReactionTimeEvent, ReactionTimeEvent] | None
-    trigger_window_start_event: ReactionTimeEvent | None
+    behavioral_evaluations: tuple[BehavioralFatigueEvaluation, ...]
+    trigger_evaluation: BehavioralFatigueEvaluation | None
     rt_mean: float | None
     rt_median: float | None
     personalized_rt_threshold: float | None
     eye_seconds: tuple[int, ...]
-    alpha_result: AlphaDetectionResult | None
+    alpha_seconds: tuple[int, ...]
+    alpha_baseline: RobustBaseline | None
+    eye_baseline: RobustBaseline | None
     output_dir: Path
 
 
@@ -83,46 +107,21 @@ def select_baseline_events(
     ]
 
 
-def find_fatigue_trigger_pair(
+def evaluate_phase_one_behavioral_fatigue(
     events: Sequence[ReactionTimeEvent],
     config: FunctionOneConfig = DEFAULT_CONFIG,
-) -> tuple[ReactionTimeEvent, ReactionTimeEvent] | None:
-    """Return fatigue events that satisfy the follow-up reaction-window rule.
-
-    After an initial fatigue event, the next reaction event starts an inclusive
-    60-second window. A fatigue event at the window start or before its end
-    triggers Function One.
-    """
-    details = find_fatigue_trigger_details(events, config)
-    if details is None:
-        return None
-    initial_fatigue, _, followup_fatigue = details
-    return initial_fatigue, followup_fatigue
-
-
-def find_fatigue_trigger_details(
-    events: Sequence[ReactionTimeEvent],
-    config: FunctionOneConfig = DEFAULT_CONFIG,
-) -> tuple[ReactionTimeEvent, ReactionTimeEvent, ReactionTimeEvent] | None:
-    """Return initial fatigue, next reaction/window start, and follow-up fatigue."""
-    ordered_events = sorted(
+) -> tuple[BehavioralFatigueEvaluation, ...]:
+    """Evaluate the unified Phase 1 Local/Global and critical-lapse rules."""
+    baseline_events = select_baseline_events(
         events,
-        key=lambda event: (event.event_second, event.deviation_time),
+        config,
     )
-    for initial_index, initial_event in enumerate(ordered_events[:-1]):
-        if initial_event.reaction_time < config.fatigue_reaction_threshold:
-            continue
-
-        window_start_event = ordered_events[initial_index + 1]
-        window_end_second = (
-            window_start_event.event_second + config.fatigue_window_seconds
-        )
-        for followup_event in ordered_events[initial_index + 1 :]:
-            if followup_event.event_second > window_end_second:
-                break
-            if followup_event.reaction_time >= config.fatigue_reaction_threshold:
-                return initial_event, window_start_event, followup_event
-    return None
+    return evaluate_behavioral_fatigue_events(
+        baseline_events,
+        config.fatigue_reaction_threshold,
+        global_window_seconds=config.global_rt_window_seconds,
+        critical_local_rt_threshold=config.critical_local_rt_threshold,
+    )
 
 
 def _find_fp2_channel(channel_names: Sequence[str]) -> str:
@@ -157,7 +156,6 @@ def write_function_one_workbook(
     summary = workbook.active
     summary.title = "功能一摘要"
 
-    alpha_result = result.alpha_result
     summary_rows = [
         ("record_id", result.record_id),
         ("功能一結果", result.decision),
@@ -165,46 +163,84 @@ def write_function_one_workbook(
         ("Baseline開始秒", config.baseline_start_second),
         ("Baseline結束秒", config.baseline_end_second),
         ("固定疲勞RT門檻_秒", config.fatigue_reaction_threshold),
-        ("疲勞事件窗口_秒", config.fatigue_window_seconds),
+        ("Global RT窗口_秒", config.global_rt_window_seconds),
+        ("Critical Local RT門檻_秒", config.critical_local_rt_threshold),
         ("前300秒RT事件數", len(result.events)),
         (
-            "前300秒疲勞RT事件數",
-            sum(
-                event.reaction_time >= config.fatigue_reaction_threshold
-                for event in result.events
-            ),
+            "前300秒Local與Global持續疲勞事件數",
+            sum(item.sustained_fatigue for item in result.behavioral_evaluations),
+        ),
+        (
+            "前300秒Critical Lapse事件數",
+            sum(item.critical_lapse for item in result.behavioral_evaluations),
         ),
         ("RT平均Baseline", result.rt_mean),
         ("RT中位數Baseline", result.rt_median),
         ("個人化RT疲勞門檻", result.personalized_rt_threshold),
         ("眼動秒數", len(result.eye_seconds) if result.allow_driving else None),
+        ("Alpha秒數", len(result.alpha_seconds) if result.allow_driving else None),
+        ("生理特徵窗口_秒", config.physiological_window_seconds),
         (
-            "眼動排除秒數",
-            alpha_result.excluded_eye_seconds if alpha_result is not None else None,
+            "Alpha Baseline Median",
+            result.alpha_baseline.median if result.alpha_baseline else None,
         ),
         (
-            "有效FFT秒數",
-            alpha_result.valid_fft_seconds if alpha_result is not None else None,
+            "Alpha Baseline MAD",
+            result.alpha_baseline.mad if result.alpha_baseline else None,
         ),
         (
-            "符合Alpha條件秒數",
-            len(alpha_result.alpha_seconds) if alpha_result is not None else None,
-        ),
-        ("Alpha Power平均Baseline", alpha_result.alpha_mean if alpha_result else None),
-        ("Alpha Power中位數Baseline", alpha_result.alpha_median if alpha_result else None),
-        (
-            "觸發疲勞事件1_秒",
-            result.trigger_pair[0].event_second if result.trigger_pair else None,
+            "Alpha Baseline IQR",
+            result.alpha_baseline.iqr if result.alpha_baseline else None,
         ),
         (
-            "後續60秒窗口開始_秒",
-            result.trigger_window_start_event.event_second
-            if result.trigger_window_start_event
+            "Alpha Baseline Scale",
+            result.alpha_baseline.scale if result.alpha_baseline else None,
+        ),
+        (
+            "Alpha Scale Method",
+            result.alpha_baseline.scale_method if result.alpha_baseline else None,
+        ),
+        (
+            "Eye Baseline Median",
+            result.eye_baseline.median if result.eye_baseline else None,
+        ),
+        (
+            "Eye Baseline MAD",
+            result.eye_baseline.mad if result.eye_baseline else None,
+        ),
+        (
+            "Eye Baseline IQR",
+            result.eye_baseline.iqr if result.eye_baseline else None,
+        ),
+        (
+            "Eye Baseline Scale",
+            result.eye_baseline.scale if result.eye_baseline else None,
+        ),
+        (
+            "Eye Scale Method",
+            result.eye_baseline.scale_method if result.eye_baseline else None,
+        ),
+        (
+            "觸發行為疲勞事件_秒",
+            result.trigger_evaluation.event.event_second
+            if result.trigger_evaluation
             else None,
         ),
         (
-            "觸發疲勞事件2_秒",
-            result.trigger_pair[1].event_second if result.trigger_pair else None,
+            "觸發Local RT_秒",
+            result.trigger_evaluation.event.reaction_time
+            if result.trigger_evaluation
+            else None,
+        ),
+        (
+            "觸發Global RT_秒",
+            result.trigger_evaluation.global_rt if result.trigger_evaluation else None,
+        ),
+        (
+            "觸發原因",
+            result.trigger_evaluation.trigger_reason
+            if result.trigger_evaluation
+            else None,
         ),
     ]
     summary.append(["項目", "數值"])
@@ -219,16 +255,27 @@ def write_function_one_workbook(
             "偏移開始時間_秒",
             "導正開始時間_秒",
             "向上取整事件秒數",
-            "Reaction Time_秒",
-            "RT>=1.6",
-            "後續60秒窗口起點",
-            "觸發功能一",
+            "Local RT_秒",
+            "Global RT_秒",
+            "Phase",
+            "Active Threshold_秒",
+            "已滿90秒Global窗口",
+            "Local>=Threshold",
+            "Global>=Threshold",
+            "Local+Global持續疲勞",
+            "Critical Lapse",
+            "Behavioral Fatigue",
+            "觸發原因",
+            "Phase 1排除事件",
         ]
     )
-    trigger_ids = {
-        event.event_index for event in result.trigger_pair
-    } if result.trigger_pair else set()
-    for event in result.events:
+    trigger_index = (
+        result.trigger_evaluation.event.event_index
+        if result.trigger_evaluation
+        else None
+    )
+    for evaluation in result.behavioral_evaluations:
+        event = evaluation.event
         event_sheet.append(
             [
                 event.event_index,
@@ -237,39 +284,23 @@ def write_function_one_workbook(
                 event.correction_start_time,
                 event.event_second,
                 event.reaction_time,
-                event.reaction_time >= config.fatigue_reaction_threshold,
-                result.trigger_window_start_event is not None
-                and event.event_index == result.trigger_window_start_event.event_index,
-                event.event_index in trigger_ids,
+                evaluation.global_rt,
+                "Phase 1",
+                evaluation.active_threshold,
+                evaluation.has_full_global_window,
+                evaluation.local_exceed,
+                evaluation.global_exceed,
+                evaluation.sustained_fatigue,
+                evaluation.critical_lapse,
+                evaluation.behavioral_fatigue,
+                evaluation.trigger_reason,
+                event.event_index == trigger_index,
             ]
         )
 
-    if alpha_result is not None:
-        alpha_sheet = workbook.create_sheet("Alpha Power逐秒")
-        alpha_sheet.append(
-            [
-                "秒數",
-                "眼動排除",
-                "Theta Power",
-                "Alpha Power",
-                "Beta Power",
-                "Alpha>Theta且Alpha>Beta",
-            ]
-        )
-        for record in alpha_result.records:
-            alpha_sheet.append(
-                [
-                    record.second,
-                    record.excluded_by_eye,
-                    record.theta_power,
-                    record.alpha_power,
-                    record.beta_power,
-                    record.alpha_qualified,
-                ]
-            )
-
-    for cell in event_sheet["F"][1:]:
-        cell.number_format = "0.0"
+    for column in ("F", "G", "I"):
+        for cell in event_sheet[column][1:]:
+            cell.number_format = "0.0"
     for worksheet in workbook.worksheets:
         worksheet.freeze_panes = "A2"
         _autosize_worksheet(worksheet)
@@ -288,38 +319,52 @@ def save_rt_validation_plot(
     plt.rcParams["axes.unicode_minus"] = False
 
     figure, axis = plt.subplots(figsize=(13, 6.5))
-    normal_events = [
-        event
-        for event in result.events
-        if event.reaction_time < config.fatigue_reaction_threshold
+    normal_evaluations = [
+        item for item in result.behavioral_evaluations if not item.behavioral_fatigue
     ]
-    fatigue_events = [
-        event
-        for event in result.events
-        if event.reaction_time >= config.fatigue_reaction_threshold
+    triggered_evaluations = [
+        item for item in result.behavioral_evaluations if item.behavioral_fatigue
     ]
-    if normal_events:
+    if normal_evaluations:
         axis.scatter(
-            [event.event_second for event in normal_events],
-            [event.reaction_time for event in normal_events],
+            [item.event.event_second for item in normal_evaluations],
+            [item.event.reaction_time for item in normal_evaluations],
             color="#4472C4",
-            label="RT < 1.6秒",
+            label="Local RT（未觸發）",
             zorder=3,
         )
-    if fatigue_events:
+    if triggered_evaluations:
         axis.scatter(
-            [event.event_second for event in fatigue_events],
-            [event.reaction_time for event in fatigue_events],
+            [item.event.event_second for item in triggered_evaluations],
+            [item.event.reaction_time for item in triggered_evaluations],
             color="#C00000",
-            label="RT >= 1.6秒",
+            label="Local RT（行為觸發）",
             zorder=4,
+        )
+    if result.behavioral_evaluations:
+        axis.plot(
+            [item.event.event_second for item in result.behavioral_evaluations],
+            [item.global_rt for item in result.behavioral_evaluations],
+            color="#ED7D31",
+            marker="o",
+            markersize=3,
+            linewidth=1.6,
+            label=f"Global RT（含當次，{config.global_rt_window_seconds}秒）",
+            zorder=2,
         )
     axis.axhline(
         config.fatigue_reaction_threshold,
         color="#C00000",
         linestyle="--",
         linewidth=1.5,
-        label="固定疲勞門檻 1.6秒",
+        label=f"Phase 1門檻 {config.fatigue_reaction_threshold:g}秒",
+    )
+    axis.axhline(
+        config.critical_local_rt_threshold,
+        color="#7030A0",
+        linestyle="-.",
+        linewidth=1.5,
+        label=f"Critical Local RT {config.critical_local_rt_threshold:g}秒",
     )
     if result.personalized_rt_threshold is not None:
         axis.axhline(
@@ -327,26 +372,31 @@ def save_rt_validation_plot(
             color="#70AD47",
             linestyle=":",
             linewidth=1.8,
-            label=f"個人化門檻 {result.personalized_rt_threshold:.3f}秒",
+            label=f"個人化門檻 {result.personalized_rt_threshold:.1f}秒",
         )
-    if result.trigger_pair is not None and result.trigger_window_start_event is not None:
-        first, second = result.trigger_pair
-        window_start_second = result.trigger_window_start_event.event_second
-        axis.axvspan(
-            window_start_second,
-            window_start_second + config.fatigue_window_seconds,
-            color="#F4CCCC",
-            alpha=0.45,
-            label="下一反應事件起算的60秒窗口",
+    axis.axvspan(
+        config.baseline_start_second,
+        config.global_rt_window_seconds,
+        color="#D9D9D9",
+        alpha=0.3,
+        label="Global RT暖機期（不判持續疲勞）",
+    )
+    axis.axvline(
+        config.global_rt_window_seconds,
+        color="#7F7F7F",
+        linestyle=":",
+        linewidth=1.3,
+    )
+    if result.trigger_evaluation is not None:
+        event = result.trigger_evaluation.event
+        axis.annotate(
+            f"{event.event_second}s, {result.trigger_evaluation.trigger_reason}\n"
+            f"Local={event.reaction_time:.1f}, Global={result.trigger_evaluation.global_rt:.2f}",
+            (event.event_second, event.reaction_time),
+            xytext=(8, 10),
+            textcoords="offset points",
+            fontsize=9,
         )
-        for event in (first, second):
-            axis.annotate(
-                f"{event.event_second}s, RT={event.reaction_time:.1f}s",
-                (event.event_second, event.reaction_time),
-                xytext=(6, 8),
-                textcoords="offset points",
-                fontsize=9,
-            )
 
     detail_lines = [
         f"結果：{result.decision}",
@@ -401,17 +451,12 @@ def analyze_function_one(
     write_reaction_time_events_xlsx(
         events, resolved_output_dir / "reaction_time_events.xlsx"
     )
-    trigger_details = find_fatigue_trigger_details(events, config)
-    trigger_pair = (
-        (trigger_details[0], trigger_details[2])
-        if trigger_details is not None
-        else None
-    )
-    trigger_window_start_event = trigger_details[1] if trigger_details else None
+    behavioral_evaluations = evaluate_phase_one_behavioral_fatigue(events, config)
+    trigger_evaluation = first_behavioral_fatigue(behavioral_evaluations)
     if not events:
         decision = "INSUFFICIENT_DATA"
         allow_driving = False
-    elif trigger_pair is not None:
+    elif trigger_evaluation is not None:
         decision = "FATIGUE"
         allow_driving = False
     else:
@@ -422,50 +467,84 @@ def analyze_function_one(
     rt_median: float | None = None
     personalized_threshold: float | None = None
     eye_seconds: tuple[int, ...] = ()
-    alpha_result: AlphaDetectionResult | None = None
+    alpha_seconds: tuple[int, ...] = ()
+    alpha_baseline: RobustBaseline | None = None
+    eye_baseline: RobustBaseline | None = None
 
     if allow_driving:
         rt_values = [event.reaction_time for event in events]
         rt_mean = statistics.mean(rt_values)
         rt_median = statistics.median(rt_values)
-        personalized_threshold = min(
-            config.fatigue_reaction_threshold,
-            rt_mean * config.personalized_multiplier,
+        personalized_threshold = calculate_personalized_rt_threshold(
+            rt_values,
+            multiplier=config.personalized_multiplier,
+            maximum_threshold=config.fatigue_reaction_threshold,
         )
 
         raw = mne.io.read_raw_edf(path, preload=False, verbose=False)
-        fp2_channel = _find_fp2_channel(raw.ch_names)
-        eye_output = resolved_output_dir / "eyeblink.dat"
-        eye_seconds = tuple(
-            detect_eye_movements(
-                raw,
-                [fp2_channel],
-                eye_output,
-                start_second=config.baseline_start_second,
-                end_second=config.baseline_end_second,
+        try:
+            fp2_channel = _find_fp2_channel(raw.ch_names)
+            eye_output = resolved_output_dir / "eyeblink.dat"
+            eye_seconds = tuple(
+                detect_eye_movements(
+                    raw,
+                    [fp2_channel],
+                    eye_output,
+                    start_second=config.baseline_start_second,
+                    end_second=config.baseline_end_second,
+                )
             )
-        )
+        finally:
+            raw.close()
+
         alpha_result = detect_alpha(
             path,
-            resolved_output_dir / "Alpha.dat",
+            resolved_output_dir / "Alpha_function_one.dat",
             [fp2_channel],
             eye_seconds=eye_seconds,
             start_second=config.baseline_start_second,
             end_second=config.baseline_end_second,
         )
+        alpha_seconds = tuple(alpha_result.alpha_seconds)
 
+        complete_window_start = max(
+            config.baseline_start_second + config.physiological_window_seconds - 1,
+            config.physiological_window_seconds,
+        )
+        alpha_windows = rolling_event_counts(
+            alpha_seconds,
+            start_second=complete_window_start,
+            end_second=config.baseline_end_second,
+            window_seconds=config.physiological_window_seconds,
+        )
+        eye_windows = rolling_event_counts(
+            eye_seconds,
+            start_second=complete_window_start,
+            end_second=config.baseline_end_second,
+            window_seconds=config.physiological_window_seconds,
+        )
+        alpha_baseline = compute_robust_baseline(
+            list(alpha_windows.values()),
+            pooled_scale=config.pooled_alpha_scale,
+        )
+        eye_baseline = compute_robust_baseline(
+            list(eye_windows.values()),
+            pooled_scale=config.pooled_eye_scale,
+        )
     result = FunctionOneResult(
         record_id=record_id,
         decision=decision,
         allow_driving=allow_driving,
         events=tuple(events),
-        trigger_pair=trigger_pair,
-        trigger_window_start_event=trigger_window_start_event,
+        behavioral_evaluations=behavioral_evaluations,
+        trigger_evaluation=trigger_evaluation,
         rt_mean=rt_mean,
         rt_median=rt_median,
         personalized_rt_threshold=personalized_threshold,
         eye_seconds=eye_seconds,
-        alpha_result=alpha_result,
+        alpha_seconds=alpha_seconds,
+        alpha_baseline=alpha_baseline,
+        eye_baseline=eye_baseline,
         output_dir=resolved_output_dir,
     )
     write_function_one_workbook(
@@ -484,6 +563,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file", required=True, help="Input EDF path.")
     parser.add_argument("--output-dir", help="Output folder for this recording.")
     parser.add_argument(
+        "--pooled-alpha-scale",
+        type=float,
+        default=TRAINING_POOLED_ALPHA_SCALE,
+        help="Training-derived Alpha fallback scale when baseline MAD/IQR are zero.",
+    )
+    parser.add_argument(
+        "--pooled-eye-scale",
+        type=float,
+        default=TRAINING_POOLED_EYE_SCALE,
+        help="Training-derived Eye fallback scale when baseline MAD/IQR are zero.",
+    )
+    parser.add_argument(
         "--function-one-only",
         action="store_true",
         help="Stop after Function One instead of continuing to Function Two.",
@@ -493,9 +584,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    result = analyze_function_one(args.file, args.output_dir)
+    function_one_config = FunctionOneConfig(
+        pooled_alpha_scale=args.pooled_alpha_scale,
+        pooled_eye_scale=args.pooled_eye_scale,
+    )
+    result = analyze_function_one(args.file, args.output_dir, function_one_config)
     print(f"功能一結果：{result.decision}")
     print(f"允許繼續駕駛：{'是' if result.allow_driving else '否'}")
+    if result.trigger_evaluation is not None:
+        print(
+            "功能一行為觸發："
+            f"第{result.trigger_evaluation.event.event_second}秒"
+            f"（{result.trigger_evaluation.trigger_reason}）"
+        )
     if result.allow_driving and not args.function_one_only:
         from eeg_analysis.fatigue_driving_prediction_system.function_two import (
             analyze_function_two,
@@ -508,9 +609,11 @@ def main() -> None:
         )
         print(f"功能二狀態：{function_two_result.status}")
         if function_two_result.target_event is not None:
+            assert function_two_result.target_evaluation is not None
             print(
                 "第一個疲勞事件："
                 f"第{function_two_result.target_event.event_second}秒"
+                f"（{function_two_result.target_evaluation.trigger_reason}）"
             )
         else:
             print("第一個疲勞事件：無")

@@ -122,7 +122,10 @@ def custom_eye_movement_peaks(signal, sfreq, height_thresh, peak_to_shoulder_thr
         # 成功通過所有檢查！這是一顆標準的眼動脈衝
         peaks.append(i)
 
-    return np.array(peaks)
+    # Empty ``np.array([])`` defaults to float64 and cannot be used to index
+    # ``times``.  ``np.intp`` is NumPy's native array-index dtype and keeps the
+    # zero-peak case valid.
+    return np.asarray(peaks, dtype=np.intp)
 
 
 def detect_eye_movements(
@@ -173,7 +176,15 @@ def detect_eye_movements(
     mad = np.median(np.abs(signal - median))
     height_thresh = median + HEIGHT_MAD_SCALE * mad
 
-    peaks = custom_eye_movement_peaks(signal, sfreq, height_thresh, MIN_PEAK_TO_SHOULDER_DELTA)
+    peaks = np.asarray(
+        custom_eye_movement_peaks(
+            signal,
+            sfreq,
+            height_thresh,
+            MIN_PEAK_TO_SHOULDER_DELTA,
+        ),
+        dtype=np.intp,
+    )
     eye_move_seconds = np.unique(np.ceil(times[peaks])).astype(int)
     last_included_second = int(np.ceil(times[-1]))
     if end_second is not None:

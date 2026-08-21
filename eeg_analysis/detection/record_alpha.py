@@ -272,7 +272,8 @@ def detect_alpha(
 
     When ``alpha_power_threshold`` is supplied, a second qualifies only when
     Alpha is dominant over Theta/Beta and its power is strictly above that
-    threshold. Function Two uses the personal Alpha median for this value.
+    threshold. The integrated Function Two flow leaves this unset and uses
+    Alpha dominance over Theta/Beta without a personalized Power threshold.
     """
     channel_name = resolve_alpha_channel_name(target_channels)
     signal, sample_rate, resolved_name = load_channel_signal(edf_path, channel_name)
