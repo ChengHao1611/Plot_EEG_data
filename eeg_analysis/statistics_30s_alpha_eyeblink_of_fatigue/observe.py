@@ -152,6 +152,36 @@ def normalize_event_columns(events_df: pd.DataFrame) -> pd.DataFrame:
     return events_df.rename(columns=rename_columns)
 
 
+def load_event_workbook(
+    event_xlsx_path: str | Path,
+) -> tuple[pd.DataFrame, int | None]:
+    """Load the event sheet and optional full-recording duration metadata."""
+    recording_end_second: int | None = None
+    with pd.ExcelFile(event_xlsx_path) as workbook:
+        event_sheet = (
+            "reaction_time_events"
+            if "reaction_time_events" in workbook.sheet_names
+            else workbook.sheet_names[0]
+        )
+        events = normalize_event_columns(
+            pd.read_excel(workbook, sheet_name=event_sheet)
+        )
+        if "recording_metadata" in workbook.sheet_names:
+            metadata = pd.read_excel(workbook, sheet_name="recording_metadata")
+            if {"Item", "Value"}.issubset(metadata.columns):
+                matches = metadata.loc[
+                    metadata["Item"].astype(str).str.strip().eq(
+                        "Recording End Second"
+                    ),
+                    "Value",
+                ]
+                if not matches.empty:
+                    value = pd.to_numeric(matches.iloc[0], errors="coerce")
+                    if pd.notna(value) and float(value) >= 0:
+                        recording_end_second = int(value)
+    return events, recording_end_second
+
+
 def find_first_fatigue_onset(
     state_df: pd.DataFrame,
     state_column: str,
@@ -435,7 +465,7 @@ class EEGBrowserGUI:
             self.safe_update_status("數據讀取中...")
             
             # 讀取數據 (使用傳進來的字串路徑)
-            df_main = normalize_event_columns(pd.read_excel(xlsx_p))
+            df_main, recording_end_second = load_event_workbook(xlsx_p)
             df_main['second'] = pd.to_numeric(df_main['second'], errors='coerce')
             df_main['react_time'] = pd.to_numeric(df_main['react_time'], errors='coerce')
             df_main = df_main.dropna(subset=['second'])
@@ -444,7 +474,18 @@ class EEGBrowserGUI:
             eye_counts = self.load_dat_counts(eye_p)
             
             # 建立主時間軸
-            max_s = int(max(df_main['second'].max(), alpha_counts.index.max() or 0, eye_counts.index.max() or 0))
+            time_candidates = [
+                pd.to_numeric(df_main['second'], errors='coerce').max(),
+                alpha_counts.index.max() if not alpha_counts.empty else 0,
+                eye_counts.index.max() if not eye_counts.empty else 0,
+                recording_end_second if recording_end_second is not None else 0,
+            ]
+            finite_candidates = [
+                float(value)
+                for value in time_candidates
+                if pd.notna(value) and math.isfinite(float(value))
+            ]
+            max_s = int(max(finite_candidates, default=0))
             master_df = pd.DataFrame({'second': range(max_s + 1)})
             master_df = master_df.merge(alpha_counts.rename('a_raw'), left_on='second', right_index=True, how='left').fillna(0)
             master_df = master_df.merge(eye_counts.rename('e_raw'), left_on='second', right_index=True, how='left').fillna(0)
@@ -460,6 +501,7 @@ class EEGBrowserGUI:
                 rt_threshold,
                 pooled_alpha_scale,
                 pooled_eye_scale,
+                recording_end_second=max_s,
             )
 
         except Exception as e:
@@ -480,6 +522,7 @@ class EEGBrowserGUI:
         rt_threshold,
         pooled_alpha_scale,
         pooled_eye_scale,
+        recording_end_second,
     ):
         """生成駕駛狀態隨時間演變圖（生理預測與實際反應時間）。"""
         self.safe_update_status("正在生成狀態演變圖...")
@@ -489,6 +532,8 @@ class EEGBrowserGUI:
         record_name = Path(event_xlsx_path).stem
         if record_name.lower().endswith("_raw"):
             record_name = record_name[:-4]
+        elif record_name.casefold() == "reaction_time_events":
+            record_name = Path(event_xlsx_path).resolve().parent.name
         figure_output_path = (
             Path(__file__).resolve().parent
             / "data"
@@ -515,12 +560,8 @@ class EEGBrowserGUI:
             summary_rows = [
                 ("Personalized RT Threshold", rt_threshold),
                 (
-                    "Behavioral Global RT Window Seconds",
+                    "Behavioral Forward Global RT Window Seconds",
                     state_df.attrs["global_rt_window_seconds"],
-                ),
-                (
-                    "Critical Local RT Threshold",
-                    state_df.attrs["critical_local_rt_threshold"],
                 ),
                 (
                     "Behavioral Rule",
@@ -541,7 +582,12 @@ class EEGBrowserGUI:
                 ("Input Pooled Eye Scale", pooled_eye_scale),
                 ("Pooled Scale Source", "Manual Observe input"),
                 ("First Behavioral Fatigue Second", first_behavioral_second),
+                (
+                    "Behavioral Confirmation Second",
+                    state_df.attrs.get("first_confirmation_second"),
+                ),
                 ("Phase One Blocked", state_df.attrs["phase_one_blocked"]),
+                ("Recording End Second", recording_end_second),
                 ("Plot End Second", plot_end_second),
                 ("Alpha Median", alpha_baseline.median if alpha_baseline else None),
                 ("Alpha MAD", alpha_baseline.mad if alpha_baseline else None),
@@ -566,9 +612,12 @@ class EEGBrowserGUI:
                 f"Both_Z>={algorithm_config.score_threshold:g}",
                 "Consecutive_Seconds", "React_time",
                 "Personalized_RT_Threshold", "Eye_Alarm", "Alpha_Alarm",
-                "Pred_State", "Behavioral_State", "Global_RT",
-                "Local>=Threshold", "Global>=Threshold", "Sustained_Fatigue",
-                "Critical_Lapse", "Behavioral_Trigger", "Trigger_Reason",
+                "Pred_State", "Behavioral_State", "Forward_Global_RT",
+                "Forward_Window_Start", "Forward_Window_End",
+                "Complete_Forward_Window", "Future_RT_Count",
+                "Local>=Threshold", "Forward_Global>=Threshold",
+                "Forward_Confirmed_Fatigue", "Behavioral_Trigger",
+                "Confirmation_Second", "Trigger_Reason",
             ]
             ws.append(headers)
 
@@ -593,11 +642,15 @@ class EEGBrowserGUI:
                     int(row['pred_state']),
                     int(behavior['state_val']) if behavior else "",
                     behavior['global_rt'] if behavior else "",
+                    behavior['window_start_second'] if behavior else "",
+                    behavior['window_end_second'] if behavior else "",
+                    int(behavior['has_full_forward_window']) if behavior else "",
+                    int(behavior['future_event_count']) if behavior else "",
                     int(behavior['local_exceed']) if behavior else "",
                     int(behavior['global_exceed']) if behavior else "",
                     int(behavior['sustained_fatigue']) if behavior else "",
-                    int(behavior['critical_lapse']) if behavior else "",
                     int(behavior['behavioral_fatigue']) if behavior else "",
+                    behavior['confirmation_second'] if behavior else "",
                     behavior['trigger_reason'] if behavior else "",
                 ])
             excel_filename = figure_output_path.with_suffix(".xlsx")
@@ -614,6 +667,7 @@ class EEGBrowserGUI:
             df_main,
             personalized_rt_threshold=rt_threshold,
             config=algorithm_config,
+            recording_end_second=recording_end_second,
         )
         pred_df = predict_fatigue_states(master_df, config=algorithm_config)
         first_behavioral_second = find_first_fatigue_onset(

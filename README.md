@@ -16,9 +16,9 @@
 
 疲勞駕駛對道路安全造成重大威脅，然而影像辨識與車輛偏移等常見方法，多半在駕駛者已出現明顯疲勞行為後才發出警示。本研究提出一套結合腦電圖（Electroencephalography, EEG）Alpha 波與眼動／眨眼（eyeblink）訊號的兩階段疲勞駕駛預測演算法，期望在行為性疲勞發生前提供預警。
 
-第一階段利用駕駛開始後前 300 秒的車道偏移反應時間（Reaction Time, RT）進行安全篩檢，排除已呈現高風險疲勞狀態的資料，並為通過篩檢的駕駛者建立個人化 RT 基準。第二階段自第 301 秒起，以 30 秒眼動與 Alpha 特徵窗口持續評估生理疲勞，並與第一個 Local／Global RT 或 Critical Lapse 行為 onset 比較，以計算是否成功預測及提前時間。
+第一階段利用駕駛開始後前 300 秒的車道偏移反應時間（Reaction Time, RT）進行安全篩檢，排除已呈現高風險疲勞狀態的資料，並為通過篩檢的駕駛者建立個人化 RT 基準。第二階段自第 301 秒起，以 30 秒眼動與 Alpha 特徵窗口持續評估生理疲勞，並與第一個由後續 90 秒確認的行為疲勞 onset 比較，以計算是否成功預測及提前時間。
 
-論文原稿報告的 12 筆訓練資料中，有 5 筆在第一階段被判定為高風險並排除；其餘 7 筆中有 6 筆成功在行為性疲勞前發出警報，成功率為 85.7%。這些數字來自先前使用 60 秒重複 RT 事件與個人化 Alpha Power 中位數門檻的版本；目前程式已改用 Local／Global RT 與 Critical Lapse，並移除 Alpha 個人化門檻，須重新執行資料分析後才能更新成效數字。
+論文原稿報告的 12 筆訓練資料中，有 5 筆在第一階段被判定為高風險並排除；其餘 7 筆中有 6 筆成功在行為性疲勞前發出警報，成功率為 85.7%。這些數字來自先前使用 60 秒重複 RT 事件與個人化 Alpha Power 中位數門檻的版本；目前程式已改用 Local RT 與往後 90 秒的 Forward Global RT，並移除 Alpha 個人化門檻，須重新執行資料分析後才能更新成效數字。
 
 **關鍵詞：** 疲勞駕駛、腦電圖、Alpha 波、眼動、眨眼、反應時間、個人化預警
 
@@ -61,9 +61,9 @@ Phase 1 RT threshold = 1.6 秒
 
 #### 2.3 第一階段：安全篩檢與個人化 RT 基準
 
-系統先檢查前 300 秒的 RT 事件。每個事件的 Local RT 是該次反應時間；Global RT 則是事件整數秒 `s` 往前 90 秒至當次事件的 Local RT 平均，即納入 `s - 90 <= event_second <= s` 且截至當次已經發生的事件。Global RT 包含目前事件，不會納入同一整數秒中尚未發生的後續事件。
+系統從第 0 秒開始依序檢查 RT 事件。每個事件的 Local RT 是該次反應時間；當第 `s` 秒的 Local RT 達門檻時，以 `[s, s+90]` 內包含當次及後續事件的 Local RT 平均作為 Forward Global RT。只有 recording 至少涵蓋完整的 `s+90`，且窗口內至少還有一筆發生在較晚秒數的 RT，才具備確認資格。
 
-前 90 秒因尚未累積完整時間窗口，不判定 Local／Global 持續疲勞；自第 90 秒起，Local RT 與 Global RT 均大於或等於 1.6 秒才判定持續疲勞。此外，任何 `Local RT >= 3.2` 秒的事件均定義為 Critical Lapse，可在前 90 秒暖機期直接觸發。前 300 秒只要出現持續疲勞或 Critical Lapse，就排除該筆 recording，不進入第二階段。
+若 `Local RT(s) >= 1.6` 且該事件的 Forward Global RT 也 `>= 1.6`，便將第 `s` 秒回標為行為疲勞 onset，確認時間則是 `s+90`。單次極長 RT 不再立即觸發。Onset 位於第 300 秒（含）以前時排除該筆 recording，不進入第二階段；因此 Phase 1 候選事件可以使用第 300 秒後的 RT 完成確認。
 
 未達上述條件者可進入第二階段，並以其前 300 秒 RT 資料建立下列個人化基準：
 
@@ -94,16 +94,16 @@ Z_Alpha >= 0.8 且 Z_Eye >= 0.8
 上述兩項同時連續成立 4 秒
 ```
 
-第二階段沿用第一階段的 RT 歷史建立 90 秒 Global RT，不會在第 301 秒重新暖機。第 300 秒後，第一個同時符合 `Local RT >= 個人化門檻` 與 `Global RT >= 個人化門檻` 的事件，或第一個 `Local RT >= 3.2` 秒的 Critical Lapse，定義為 Behavioral Fatigue Onset。系統保留 `LOCAL_AND_GLOBAL`、`CRITICAL_LOCAL_RT` 或 `SUSTAINED_AND_CRITICAL` 觸發原因，記錄第一次生理警報，並以「onset 時間減去第一次警報時間」計算提前秒數；第一個目標事件發生後，即停止該筆資料的預測流程。
+第 300 秒後，系統從第一個 `Local RT >= 個人化門檻` 的異常事件開始檢查其 `[s, s+90]` Forward Global RT；兩者皆達門檻時，將 `s` 定義為 Behavioral Fatigue Onset，並將 `s+90` 記為 confirmation。觸發原因為 `LOCAL_AND_FORWARD_GLOBAL`。系統記錄第一次生理警報，並以「onset 時間減去第一次警報時間」計算提前秒數；Forward window 僅用於離線確認，生理預測仍以 onset 為目標。
 
 ```text
 開始駕駛
    │
    ▼
 前 300 秒 RT 安全篩檢
-   ├─ 前 90 秒 Local RT >= 3.2 → Critical Lapse／停止
-   ├─ 90～300 秒 Local 與 Global RT 均 >= 1.6 → 高風險／停止
-   ├─ 任一事件 Local RT >= 3.2 → Critical Lapse／停止
+   ├─ 找到 Local RT >= 1.6 的異常起點 s
+   ├─ 檢查 [s, s+90] Forward Global RT
+   ├─ Forward Global RT >= 1.6 → onset=s／停止
    └─ 通過篩檢
           │
           ▼
@@ -118,7 +118,7 @@ Z_Alpha >= 0.8 且 Z_Eye >= 0.8
 Z_Alpha與Z_Eye皆 >= 0.8，連續 4 秒
           │
           ▼
-發出警報，並與第一個 Local+Global 或 Critical Lapse onset 比較
+發出警報，並與第一個 Local+Forward Global onset 比較
 ```
 
 ### 3. 實驗結果
@@ -230,14 +230,14 @@ python -m eeg_analysis.fatigue_driving_prediction_system.function_one --file dat
 | 檔案 | 說明 |
 | --- | --- |
 | `training_batch_results.xlsx` | train_data每筆資料的EDF路徑、Phase 1／2狀態、行為onset、生理警報、提前時間與錯誤摘要。 |
-| `reaction_time_events.xlsx` | 從 EDF 擷取的 RT 事件。 |
-| `function_one_results.xlsx` | 第一階段逐事件 Local／Global RT、Critical Lapse、觸發原因與個人化 RT baseline。 |
-| `rt_validation.png` | 前 300 秒 Local／Global RT、90 秒暖機期、固定門檻與 3.2 秒 Critical 門檻。 |
+| `reaction_time_events.xlsx` | 從 EDF 擷取的整段 RT 事件，以及 recording 結束秒數。 |
+| `function_one_results.xlsx` | 第一階段逐事件 Local／Forward Global RT、forward window、確認秒與個人化 RT baseline。 |
+| `rt_validation.png` | 前 300 秒 Local／Forward Global RT與固定門檻。 |
 | `eyeblink.dat` | 第一階段偵測到的眼動秒數。 |
 | `eyeblink_function_two.dat` | 從第 1 秒至第二階段終點的眼動秒數。 |
 | `Alpha_function_two.dat` | 從第 1 秒至第二階段終點，符合頻帶優勢條件的非眼動 Alpha 秒數。 |
-| `function_two_results.xlsx` | 第二階段摘要、逐秒生理特徵及第 300 秒後逐事件 Local／Global RT 與觸發原因。 |
-| `behavioral_rt_debug.png` | 兩階段 Local RT、Global RT、active threshold、Critical threshold 與 Phase 2 onset。 |
+| `function_two_results.xlsx` | 第二階段摘要、逐秒生理特徵及第 300 秒後逐事件 Local／Forward Global RT、確認秒與觸發原因。 |
+| `behavioral_rt_debug.png` | 兩階段 Local RT、Forward Global RT、active threshold 與 Phase 2 onset。 |
 | `function_two_pre_fatigue_90s.png` | 第一個疲勞事件前 90 秒的眼動、Alpha 與標準化分數圖；沒有目標事件時不產生。 |
 
 ### 6. 單獨偵測眼動與 Alpha
@@ -268,7 +268,7 @@ python -m eeg_analysis.driving_state.predict_algorithm
 python -m eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.observe
 ```
 
-Observe 會將事件秒數向上取整、Local RT 以一般四捨五入取至小數第一位；個人化 RT 門檻由使用者在介面手動輸入，不會從前 300 秒自動計算。Pooled Alpha／Eye scale 也由介面輸入，預設帶入與 `function_two` 相同的 `1.4826`／`4.4478`，Observe 執行時不會讀取 `train_data`。行為疲勞從整段 recording 開始搜尋：Global RT 使用包含當次事件的 `[s-90, s]`，以 `>=` 比較 Local／Global 手動門檻，另由 `Local RT >= 3.2` 直接觸發 Critical Lapse；若第一次觸發在前 300 秒（含），圖上只顯示 Phase 1 行為疲勞、累積特徵與 RT，不顯示 Phase 2、生理疲勞標記或下方生理判定圖。圖表時間顯示至 `min(第一次行為疲勞時間 + 500秒, recording總時間)`，沒有行為疲勞時顯示完整時間。結果圖與逐秒除錯 Excel 會輸出至 `eeg_analysis/statistics_30s_alpha_eyeblink_of_fatigue/data/observe/`。
+Observe 會將事件秒數向上取整、Local RT 以一般四捨五入取至小數第一位；個人化 RT 門檻由使用者在介面手動輸入，不會從前 300 秒自動計算。Pooled Alpha／Eye scale 也由介面輸入，預設帶入與 `function_two` 相同的 `1.4826`／`4.4478`，Observe 執行時不會讀取 `train_data`。行為疲勞從整段 recording 開始搜尋：對第 `s` 秒的 Local RT 異常，以包含當次事件的 `[s, s+90]` Forward Global RT 完成確認，單次 3.2 秒以上 RT 不再立即觸發。若 onset 在前 300 秒（含），圖上只顯示 Phase 1 行為疲勞、累積特徵與 RT，不顯示 Phase 2、生理疲勞標記或下方生理判定圖；RT 仍顯示至 `min(onset + 500秒, recording總時間)`。`reaction_time_events.xlsx` 現在包含整段 RT 與 recording duration，供 Observe 建立完整時間軸。結果圖與逐秒除錯 Excel 會輸出至 `eeg_analysis/statistics_30s_alpha_eyeblink_of_fatigue/data/observe/`。
 
 ### 8. 驗證與分析工具
 

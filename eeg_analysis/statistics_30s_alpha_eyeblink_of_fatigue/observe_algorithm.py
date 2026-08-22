@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import pandas as pd
 
 from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
-    CRITICAL_LOCAL_RT_THRESHOLD,
     GLOBAL_RT_WINDOW_SECONDS,
     PHASE_ONE_DURATION_SECONDS,
     evaluate_behavioral_fatigue_events,
@@ -32,7 +31,6 @@ class FatigueAlgorithmConfig:
 
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
-    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD
     complete_window_start_second: int = 30
     score_threshold: float = 0.8
     confirmation_seconds: int = 4
@@ -47,15 +45,16 @@ def classify_actual_states(
     events_df: pd.DataFrame,
     personalized_rt_threshold: float,
     config: FatigueAlgorithmConfig = DEFAULT_CONFIG,
+    *,
+    recording_end_second: int | None = None,
 ) -> pd.DataFrame:
     """Build the Function Two behavioral state from event-level RT data.
 
     Event seconds are upward-rounded to integers and Local RT values use the
-    same conventional one-decimal rounding as the EDF parser.  Global RT is the
-    inclusive trailing 90-second mean.  The displayed behavioral state begins
-    at the first Local+Global or 3.2-second critical trigger in the full
-    recording; a trigger through second 300 therefore represents Phase 1
-    rejection.
+    same conventional one-decimal rounding as the EDF parser. Forward Global RT
+    is the inclusive mean from each abnormal event through the following 90
+    seconds. The displayed behavioral state begins at the first forward-
+    confirmed trigger; an onset through second 300 represents Phase 1 rejection.
     """
 
     events = events_df[["second", "react_time"]].copy()
@@ -88,7 +87,7 @@ def classify_actual_states(
         reaction_events,
         personalized_rt_threshold,
         global_window_seconds=config.global_rt_window_seconds,
-        critical_local_rt_threshold=config.critical_local_rt_threshold,
+        recording_end_second=recording_end_second,
     )
 
     rows: list[dict[str, float | int | bool | str]] = []
@@ -100,12 +99,16 @@ def classify_actual_states(
                 "second": evaluation.event.event_second,
                 "react_time": evaluation.event.reaction_time,
                 "global_rt": evaluation.global_rt,
+                "window_start_second": evaluation.window_start_second,
+                "window_end_second": evaluation.window_end_second,
+                "has_full_forward_window": evaluation.has_full_global_window,
+                "future_event_count": evaluation.future_event_count,
                 "active_threshold": evaluation.active_threshold,
                 "local_exceed": evaluation.local_exceed,
                 "global_exceed": evaluation.global_exceed,
                 "sustained_fatigue": evaluation.sustained_fatigue,
-                "critical_lapse": evaluation.critical_lapse,
                 "behavioral_fatigue": evaluation.behavioral_fatigue,
+                "confirmation_second": evaluation.confirmation_second,
                 "trigger_reason": evaluation.trigger_reason,
                 "state_val": int(fatigue_active),
             }
@@ -117,12 +120,16 @@ def classify_actual_states(
             "second",
             "react_time",
             "global_rt",
+            "window_start_second",
+            "window_end_second",
+            "has_full_forward_window",
+            "future_event_count",
             "active_threshold",
             "local_exceed",
             "global_exceed",
             "sustained_fatigue",
-            "critical_lapse",
             "behavioral_fatigue",
+            "confirmation_second",
             "trigger_reason",
             "state_val",
         ],
@@ -130,12 +137,20 @@ def classify_actual_states(
     result.attrs["personalized_rt_threshold"] = float(personalized_rt_threshold)
     result.attrs["behavioral_rule"] = (
         "(Local>=threshold AND "
-        f"Global{config.global_rt_window_seconds}>=threshold) OR "
-        f"Local>={config.critical_local_rt_threshold:g}"
+        f"ForwardGlobal{config.global_rt_window_seconds}>=threshold AND "
+        "complete forward window AND future RT exists)"
     )
     result.attrs["global_rt_window_seconds"] = config.global_rt_window_seconds
-    result.attrs["critical_local_rt_threshold"] = (
-        config.critical_local_rt_threshold
+    first_trigger = next(
+        (
+            evaluation
+            for evaluation in evaluations
+            if evaluation.behavioral_fatigue
+        ),
+        None,
+    )
+    result.attrs["first_confirmation_second"] = (
+        first_trigger.confirmation_second if first_trigger else None
     )
     result.attrs["phase_one_blocked"] = any(
         evaluation.behavioral_fatigue

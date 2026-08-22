@@ -119,8 +119,10 @@ def parse_reaction_time_events(
     return events
 
 
-def extract_reaction_time_events(edf_path) -> list[ReactionTimeEvent]:
-    """Extract 251/252 -> 253 reaction-time events from an EDF.
+def extract_reaction_time_events_with_duration(
+    edf_path,
+) -> tuple[list[ReactionTimeEvent], int]:
+    """Extract RT events and the complete recording end second from an EDF.
 
     Status 251 and 252 both mean that the vehicle starts deviating.  Status 253
     marks the driver's correction start and 254 marks correction completion.
@@ -138,13 +140,26 @@ def extract_reaction_time_events(edf_path) -> list[ReactionTimeEvent]:
         sample_rate = float(reader.getSampleFrequency(status_index))
     finally:
         reader.close()
-    return parse_reaction_time_events(status_signal, sample_rate)
+    recording_end_second = int(len(status_signal) // sample_rate)
+    return (
+        parse_reaction_time_events(status_signal, sample_rate),
+        recording_end_second,
+    )
+
+
+def extract_reaction_time_events(edf_path) -> list[ReactionTimeEvent]:
+    """Extract 251/252 -> 253 reaction-time events from an EDF."""
+    events, _ = extract_reaction_time_events_with_duration(edf_path)
+    return events
 
 
 def write_reaction_time_events_xlsx(
-    events: list[ReactionTimeEvent], output_path
+    events: list[ReactionTimeEvent],
+    output_path,
+    *,
+    recording_end_second: int | None = None,
 ) -> Path:
-    """Write an auditable reaction-time event table."""
+    """Write all RT events and optional recording-duration metadata."""
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
@@ -179,6 +194,12 @@ def write_reaction_time_events_xlsx(
         worksheet.column_dimensions[get_column_letter(column)].width = 22
     for cell in worksheet["F"][1:]:
         cell.number_format = "0.0"
+    if recording_end_second is not None:
+        metadata = workbook.create_sheet("recording_metadata")
+        metadata.append(["Item", "Value"])
+        metadata.append(["Recording End Second", int(recording_end_second)])
+        metadata.column_dimensions["A"].width = 28
+        metadata.column_dimensions["B"].width = 18
     workbook.save(output)
     return output
 

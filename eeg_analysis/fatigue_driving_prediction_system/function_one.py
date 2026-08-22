@@ -32,7 +32,6 @@ from eeg_analysis.detection.record_arousal import detect_eye_movements
 from eeg_analysis.detection.record_alpha import detect_alpha
 from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
     BehavioralFatigueEvaluation,
-    CRITICAL_LOCAL_RT_THRESHOLD,
     GLOBAL_RT_WINDOW_SECONDS,
     PERSONALIZED_RT_MULTIPLIER,
     PHASE_ONE_DURATION_SECONDS,
@@ -50,18 +49,18 @@ from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import
 )
 from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eyeblink_to_xlsx import (
     ReactionTimeEvent,
-    extract_reaction_time_events,
+    extract_reaction_time_events_with_duration,
     write_reaction_time_events_xlsx,
 )
 
 
 @dataclass(frozen=True)
 class FunctionOneConfig:
+    behavioral_start_second: int = 0
     baseline_start_second: int = 1
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS
     fatigue_reaction_threshold: float = PHASE_ONE_RT_THRESHOLD
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
-    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD
     personalized_multiplier: float = PERSONALIZED_RT_MULTIPLIER
     physiological_window_seconds: int = 30
     pooled_alpha_scale: float = TRAINING_POOLED_ALPHA_SCALE
@@ -110,17 +109,22 @@ def select_baseline_events(
 def evaluate_phase_one_behavioral_fatigue(
     events: Sequence[ReactionTimeEvent],
     config: FunctionOneConfig = DEFAULT_CONFIG,
+    *,
+    recording_end_second: int | None = None,
 ) -> tuple[BehavioralFatigueEvaluation, ...]:
-    """Evaluate the unified Phase 1 Local/Global and critical-lapse rules."""
-    baseline_events = select_baseline_events(
+    """Evaluate Phase 1 candidate onsets using their forward 90-second data."""
+    evaluations = evaluate_behavioral_fatigue_events(
         events,
-        config,
-    )
-    return evaluate_behavioral_fatigue_events(
-        baseline_events,
         config.fatigue_reaction_threshold,
         global_window_seconds=config.global_rt_window_seconds,
-        critical_local_rt_threshold=config.critical_local_rt_threshold,
+        recording_end_second=recording_end_second,
+    )
+    return tuple(
+        evaluation
+        for evaluation in evaluations
+        if config.behavioral_start_second
+        <= evaluation.event.event_second
+        <= config.baseline_end_second
     )
 
 
@@ -160,19 +164,15 @@ def write_function_one_workbook(
         ("record_id", result.record_id),
         ("功能一結果", result.decision),
         ("允許繼續駕駛", "是" if result.allow_driving else "否"),
+        ("行為篩檢開始秒", config.behavioral_start_second),
         ("Baseline開始秒", config.baseline_start_second),
         ("Baseline結束秒", config.baseline_end_second),
         ("固定疲勞RT門檻_秒", config.fatigue_reaction_threshold),
-        ("Global RT窗口_秒", config.global_rt_window_seconds),
-        ("Critical Local RT門檻_秒", config.critical_local_rt_threshold),
+        ("Forward Global RT窗口_秒", config.global_rt_window_seconds),
         ("前300秒RT事件數", len(result.events)),
         (
-            "前300秒Local與Global持續疲勞事件數",
+            "前300秒Local與Forward Global確認疲勞事件數",
             sum(item.sustained_fatigue for item in result.behavioral_evaluations),
-        ),
-        (
-            "前300秒Critical Lapse事件數",
-            sum(item.critical_lapse for item in result.behavioral_evaluations),
         ),
         ("RT平均Baseline", result.rt_mean),
         ("RT中位數Baseline", result.rt_median),
@@ -233,8 +233,14 @@ def write_function_one_workbook(
             else None,
         ),
         (
-            "觸發Global RT_秒",
+            "觸發Forward Global RT_秒",
             result.trigger_evaluation.global_rt if result.trigger_evaluation else None,
+        ),
+        (
+            "行為疲勞確認秒",
+            result.trigger_evaluation.confirmation_second
+            if result.trigger_evaluation
+            else None,
         ),
         (
             "觸發原因",
@@ -256,15 +262,18 @@ def write_function_one_workbook(
             "導正開始時間_秒",
             "向上取整事件秒數",
             "Local RT_秒",
-            "Global RT_秒",
+            "Forward Global RT_秒",
+            "Forward窗口開始秒",
+            "Forward窗口結束秒",
             "Phase",
             "Active Threshold_秒",
-            "已滿90秒Global窗口",
+            "具完整90秒Forward窗口",
+            "後續RT事件數",
             "Local>=Threshold",
-            "Global>=Threshold",
-            "Local+Global持續疲勞",
-            "Critical Lapse",
+            "Forward Global>=Threshold",
+            "Local+Forward Global確認疲勞",
             "Behavioral Fatigue",
+            "確認秒",
             "觸發原因",
             "Phase 1排除事件",
         ]
@@ -285,20 +294,23 @@ def write_function_one_workbook(
                 event.event_second,
                 event.reaction_time,
                 evaluation.global_rt,
+                evaluation.window_start_second,
+                evaluation.window_end_second,
                 "Phase 1",
                 evaluation.active_threshold,
                 evaluation.has_full_global_window,
+                evaluation.future_event_count,
                 evaluation.local_exceed,
                 evaluation.global_exceed,
                 evaluation.sustained_fatigue,
-                evaluation.critical_lapse,
                 evaluation.behavioral_fatigue,
+                evaluation.confirmation_second,
                 evaluation.trigger_reason,
                 event.event_index == trigger_index,
             ]
         )
 
-    for column in ("F", "G", "I"):
+    for column in ("F", "G", "K"):
         for cell in event_sheet[column][1:]:
             cell.number_format = "0.0"
     for worksheet in workbook.worksheets:
@@ -349,7 +361,7 @@ def save_rt_validation_plot(
             marker="o",
             markersize=3,
             linewidth=1.6,
-            label=f"Global RT（含當次，{config.global_rt_window_seconds}秒）",
+            label=f"Forward Global RT（含當次，往後{config.global_rt_window_seconds}秒）",
             zorder=2,
         )
     axis.axhline(
@@ -359,13 +371,6 @@ def save_rt_validation_plot(
         linewidth=1.5,
         label=f"Phase 1門檻 {config.fatigue_reaction_threshold:g}秒",
     )
-    axis.axhline(
-        config.critical_local_rt_threshold,
-        color="#7030A0",
-        linestyle="-.",
-        linewidth=1.5,
-        label=f"Critical Local RT {config.critical_local_rt_threshold:g}秒",
-    )
     if result.personalized_rt_threshold is not None:
         axis.axhline(
             result.personalized_rt_threshold,
@@ -374,24 +379,12 @@ def save_rt_validation_plot(
             linewidth=1.8,
             label=f"個人化門檻 {result.personalized_rt_threshold:.1f}秒",
         )
-    axis.axvspan(
-        config.baseline_start_second,
-        config.global_rt_window_seconds,
-        color="#D9D9D9",
-        alpha=0.3,
-        label="Global RT暖機期（不判持續疲勞）",
-    )
-    axis.axvline(
-        config.global_rt_window_seconds,
-        color="#7F7F7F",
-        linestyle=":",
-        linewidth=1.3,
-    )
     if result.trigger_evaluation is not None:
         event = result.trigger_evaluation.event
         axis.annotate(
             f"{event.event_second}s, {result.trigger_evaluation.trigger_reason}\n"
-            f"Local={event.reaction_time:.1f}, Global={result.trigger_evaluation.global_rt:.2f}",
+            f"Local={event.reaction_time:.1f}, Forward Global={result.trigger_evaluation.global_rt:.2f}\n"
+            f"Confirmed={result.trigger_evaluation.confirmation_second}s",
             (event.event_second, event.reaction_time),
             xytext=(8, 10),
             textcoords="offset points",
@@ -415,7 +408,7 @@ def save_rt_validation_plot(
         va="top",
         bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
     )
-    axis.set_xlim(config.baseline_start_second, config.baseline_end_second)
+    axis.set_xlim(config.behavioral_start_second, config.baseline_end_second)
     axis.set_xlabel("記錄秒數（向上取整）")
     axis.set_ylabel("Reaction Time（秒）")
     axis.set_title(f"{result.record_id}：前300秒Reaction Time驗證圖")
@@ -446,12 +439,18 @@ def analyze_function_one(
     )
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
-    all_events = extract_reaction_time_events(path)
+    all_events, recording_end_second = extract_reaction_time_events_with_duration(path)
     events = select_baseline_events(all_events, config)
     write_reaction_time_events_xlsx(
-        events, resolved_output_dir / "reaction_time_events.xlsx"
+        all_events,
+        resolved_output_dir / "reaction_time_events.xlsx",
+        recording_end_second=recording_end_second,
     )
-    behavioral_evaluations = evaluate_phase_one_behavioral_fatigue(events, config)
+    behavioral_evaluations = evaluate_phase_one_behavioral_fatigue(
+        all_events,
+        config,
+        recording_end_second=recording_end_second,
+    )
     trigger_evaluation = first_behavioral_fatigue(behavioral_evaluations)
     if not events:
         decision = "INSUFFICIENT_DATA"

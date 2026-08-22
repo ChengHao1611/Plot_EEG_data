@@ -31,7 +31,6 @@ from eeg_analysis.detection.record_alpha import (
 from eeg_analysis.detection.record_arousal import detect_eye_movements
 from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
     BehavioralFatigueEvaluation,
-    CRITICAL_LOCAL_RT_THRESHOLD,
     GLOBAL_RT_WINDOW_SECONDS,
     PHASE_ONE_DURATION_SECONDS,
     evaluate_behavioral_fatigue_events,
@@ -56,7 +55,7 @@ from eeg_analysis.fatigue_driving_prediction_system.training_baseline import (
 )
 from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eyeblink_to_xlsx import (
     ReactionTimeEvent,
-    extract_reaction_time_events,
+    extract_reaction_time_events_with_duration,
 )
 
 
@@ -64,7 +63,6 @@ from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eye
 class FunctionTwoConfig:
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
-    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD
     eye_window_seconds: int = 30
     alpha_window_seconds: int = 30
     score_threshold: float = 0.8
@@ -161,15 +159,15 @@ def find_first_post_baseline_fatigue_event(
     personalized_rt_threshold: float,
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS,
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS,
-    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD,
+    recording_end_second: int | None = None,
 ) -> ReactionTimeEvent | None:
-    """Return the first post-baseline unified behavioral-fatigue event."""
+    """Return the first post-baseline forward-confirmed fatigue event."""
     evaluation = find_first_post_baseline_fatigue_evaluation(
         events,
         personalized_rt_threshold,
         baseline_end_second,
         global_rt_window_seconds,
-        critical_local_rt_threshold,
+        recording_end_second,
     )
     return evaluation.event if evaluation is not None else None
 
@@ -179,14 +177,14 @@ def find_first_post_baseline_fatigue_evaluation(
     personalized_rt_threshold: float,
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS,
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS,
-    critical_local_rt_threshold: float = CRITICAL_LOCAL_RT_THRESHOLD,
+    recording_end_second: int | None = None,
 ) -> BehavioralFatigueEvaluation | None:
-    """Return the first Phase 2 Local/Global or critical-lapse trigger."""
+    """Return the first Phase 2 Local/Forward-Global trigger."""
     evaluations = evaluate_behavioral_fatigue_events(
         events,
         personalized_rt_threshold,
         global_window_seconds=global_rt_window_seconds,
-        critical_local_rt_threshold=critical_local_rt_threshold,
+        recording_end_second=recording_end_second,
     )
     return first_behavioral_fatigue(
         evaluations,
@@ -379,12 +377,14 @@ def write_training_batch_summary(
             "允許進入Phase 2",
             "Phase 1觸發秒",
             "Phase 1觸發原因",
+            "Phase 1確認秒",
             "個人化RT門檻",
             "Phase 2狀態",
             "Behavioral Onset秒",
             "Behavioral Onset原因",
             "Behavioral Onset Local RT",
-            "Behavioral Onset Global RT",
+            "Behavioral Onset Forward Global RT",
+            "Behavioral Confirmation秒",
             "第一次生理警報秒",
             "第一次生理警報原因",
             "預測成功",
@@ -415,12 +415,14 @@ def write_training_batch_summary(
                 phase_one.allow_driving if phase_one else None,
                 phase_one_trigger.event.event_second if phase_one_trigger else None,
                 phase_one_trigger.trigger_reason if phase_one_trigger else None,
+                phase_one_trigger.confirmation_second if phase_one_trigger else None,
                 phase_one.personalized_rt_threshold if phase_one else None,
                 phase_two.status if phase_two else None,
                 target.event.event_second if target else None,
                 target.trigger_reason if target else None,
                 target.event.reaction_time if target else None,
                 target.global_rt if target else None,
+                target.confirmation_second if target else None,
                 phase_two.first_warning_second if phase_two else None,
                 phase_two.first_warning_reason if phase_two else None,
                 phase_two.prediction_success if phase_two else None,
@@ -430,7 +432,7 @@ def write_training_batch_summary(
         )
 
     worksheet.freeze_panes = "A2"
-    for column in ("I", "M", "N"):
+    for column in ("J", "N", "O"):
         for cell in worksheet[column][1:]:
             cell.number_format = "0.0"
     _autosize_worksheet(worksheet)
@@ -456,8 +458,7 @@ def write_function_two_workbook(
         ("分析開始秒", result.analysis_start_second),
         ("分析結束秒", result.analysis_end_second),
         ("個人化RT疲勞門檻", result.personalized_rt_threshold),
-        ("Global RT窗口_秒", config.global_rt_window_seconds),
-        ("Critical Local RT門檻_秒", config.critical_local_rt_threshold),
+        ("Forward Global RT窗口_秒", config.global_rt_window_seconds),
         ("眼動窗口_秒", config.eye_window_seconds),
         ("Alpha窗口_秒", config.alpha_window_seconds),
         ("生理分數", "min(Z_Alpha, Z_Eye)"),
@@ -497,8 +498,14 @@ def write_function_two_workbook(
             result.target_event.reaction_time if result.target_event else None,
         ),
         (
-            "第一個疲勞事件Global RT_秒",
+            "第一個疲勞事件Forward Global RT_秒",
             result.target_evaluation.global_rt if result.target_evaluation else None,
+        ),
+        (
+            "第一個疲勞事件確認秒",
+            result.target_evaluation.confirmation_second
+            if result.target_evaluation
+            else None,
         ),
         (
             "第一個疲勞事件觸發原因",
@@ -579,15 +586,18 @@ def write_function_two_workbook(
             "事件編號",
             "事件秒數",
             "Local RT_秒",
-            "Global RT_秒",
+            "Forward Global RT_秒",
+            "Forward窗口開始秒",
+            "Forward窗口結束秒",
             "Phase",
             "Active Threshold_秒",
-            "已滿90秒Global窗口",
+            "具完整90秒Forward窗口",
+            "後續RT事件數",
             "Local>=Threshold",
-            "Global>=Threshold",
-            "Local+Global持續疲勞",
-            "Critical Lapse",
+            "Forward Global>=Threshold",
+            "Local+Forward Global確認疲勞",
             "Behavioral Fatigue",
+            "確認秒",
             "觸發原因",
             "第一個疲勞事件",
         ]
@@ -601,19 +611,22 @@ def write_function_two_workbook(
                 event.event_second,
                 event.reaction_time,
                 evaluation.global_rt,
+                evaluation.window_start_second,
+                evaluation.window_end_second,
                 "Phase 2",
                 evaluation.active_threshold,
                 evaluation.has_full_global_window,
+                evaluation.future_event_count,
                 evaluation.local_exceed,
                 evaluation.global_exceed,
                 evaluation.sustained_fatigue,
-                evaluation.critical_lapse,
                 evaluation.behavioral_fatigue,
+                evaluation.confirmation_second,
                 evaluation.trigger_reason,
                 event.event_index == target_index,
             ]
         )
-    for column in ("C", "D", "F"):
+    for column in ("C", "D", "H"):
         for cell in rt_sheet[column][1:]:
             cell.number_format = "0.0"
 
@@ -726,7 +739,7 @@ def save_behavioral_rt_debug_plot(
     output_path: str | Path,
     config: FunctionTwoConfig = DEFAULT_CONFIG,
 ) -> Path | None:
-    """Plot Local RT, inclusive Global RT, active thresholds, and onset."""
+    """Plot Local RT, forward Global RT, active thresholds, and onset."""
     if not evaluations:
         return None
 
@@ -756,7 +769,7 @@ def save_behavioral_rt_debug_plot(
         marker="o",
         markersize=3,
         linewidth=1.7,
-        label=f"Global RT（含當次，{config.global_rt_window_seconds}秒）",
+        label=f"Forward Global RT（含當次，往後{config.global_rt_window_seconds}秒）",
     )
     axis.step(
         seconds,
@@ -766,20 +779,6 @@ def save_behavioral_rt_debug_plot(
         linestyle="--",
         linewidth=1.7,
         label="Active Threshold",
-    )
-    axis.axhline(
-        config.critical_local_rt_threshold,
-        color="#7030A0",
-        linestyle="-.",
-        linewidth=1.5,
-        label=f"Critical Local RT {config.critical_local_rt_threshold:g}秒",
-    )
-    axis.axvspan(
-        0,
-        config.global_rt_window_seconds,
-        color="#D9D9D9",
-        alpha=0.3,
-        label="Global RT暖機期",
     )
     axis.axvline(
         config.baseline_end_second,
@@ -909,12 +908,12 @@ def analyze_function_two(
             config=config,
         )
 
-    all_events = extract_reaction_time_events(path)
+    all_events, recording_end_second = extract_reaction_time_events_with_duration(path)
     behavioral_evaluations = evaluate_behavioral_fatigue_events(
         all_events,
         personalized_threshold,
         global_window_seconds=config.global_rt_window_seconds,
-        critical_local_rt_threshold=config.critical_local_rt_threshold,
+        recording_end_second=recording_end_second,
     )
     post_baseline_evaluations = tuple(
         evaluation
@@ -931,7 +930,11 @@ def analyze_function_two(
         fp2_channel = _find_fp2_channel(raw.ch_names)
         sample_rate = float(raw.info["sfreq"])
         samples_per_second = max(int(round(sample_rate)), 1)
-        recording_end_second = int(raw.n_times // samples_per_second)
+        signal_recording_end_second = int(raw.n_times // samples_per_second)
+        recording_end_second = min(
+            recording_end_second,
+            signal_recording_end_second,
+        )
         requested_end_second = (
             target_event.event_second if target_event else recording_end_second
         )
