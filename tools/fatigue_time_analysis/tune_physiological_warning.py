@@ -281,10 +281,8 @@ def first_confirmed_alarm(
 def classify_record_result(
     recording: RecordingScoreData,
     alarm_second: int | None,
-    *,
-    min_lead_seconds: int = 30,
-    max_lead_seconds: int = 60,
 ) -> tuple[str, int | None]:
+    """Classify any confirmed warning strictly before the target as successful."""
     target = recording.target_second
     if target is None:
         return (
@@ -292,23 +290,14 @@ def classify_record_result(
             None,
         )
 
-    target_window_start = max(
-        recording.analysis_start_second,
-        target - max_lead_seconds,
-    )
-    target_window_end = target - min_lead_seconds
-    if target_window_start > target_window_end:
+    if target <= recording.analysis_start_second:
         return "NOT_EVALUABLE", None
     if alarm_second is None:
         return "MISS", None
 
     lead = target - alarm_second
-    if lead > max_lead_seconds:
-        return "TOO_EARLY", lead
-    if min_lead_seconds <= lead <= max_lead_seconds:
+    if lead > 0:
         return "SUCCESS", lead
-    if 0 < lead < min_lead_seconds:
-        return "TOO_LATE", lead
     return "AT_OR_AFTER_TARGET", lead
 
 
@@ -317,7 +306,7 @@ def evaluate_parameter_grid(
     *,
     h_values: Iterable[float] = H_VALUES,
     duration_values: Iterable[int] = DURATION_VALUES,
-    maximum_early_false_count: int = 1,
+    maximum_false_alarm_count: int = 1,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     detail_rows: list[dict[str, object]] = []
     for h in h_values:
@@ -360,8 +349,8 @@ def evaluate_parameter_grid(
             .groupby("subject_id")["success"]
             .mean()
         )
-        early_false_count = int(
-            group["classification"].isin(["TOO_EARLY", "NO_TARGET_FALSE_ALARM"]).sum()
+        false_alarm_count = int(
+            group["classification"].eq("NO_TARGET_FALSE_ALARM").sum()
         )
         success_leads = pd.to_numeric(
             group.loc[group["classification"].eq("SUCCESS"), "lead_seconds"],
@@ -372,10 +361,9 @@ def evaluate_parameter_grid(
             {
                 "h": float(h),
                 "duration_seconds": int(duration),
+                "maximum_false_alarm_count": int(maximum_false_alarm_count),
                 "evaluable_count": int(len(evaluable)),
                 "success_count": int(success.sum()),
-                "too_early_count": int(group["classification"].eq("TOO_EARLY").sum()),
-                "too_late_count": int(group["classification"].eq("TOO_LATE").sum()),
                 "miss_count": int(group["classification"].eq("MISS").sum()),
                 "at_or_after_count": int(
                     group["classification"].eq("AT_OR_AFTER_TARGET").sum()
@@ -386,7 +374,7 @@ def evaluate_parameter_grid(
                 "no_target_false_alarm_count": int(
                     group["classification"].eq("NO_TARGET_FALSE_ALARM").sum()
                 ),
-                "early_false_count": early_false_count,
+                "false_alarm_count": false_alarm_count,
                 "record_success_rate": (
                     float(success.mean()) if len(evaluable) else math.nan
                 ),
@@ -394,11 +382,8 @@ def evaluate_parameter_grid(
                     float(subject_success.mean()) if not subject_success.empty else math.nan
                 ),
                 "median_success_lead": median_lead,
-                "lead_distance_from_45": (
-                    abs(median_lead - 45) if np.isfinite(median_lead) else math.inf
-                ),
-                "early_false_constraint_ok": (
-                    early_false_count <= maximum_early_false_count
+                "false_alarm_constraint_ok": (
+                    false_alarm_count <= maximum_false_alarm_count
                 ),
             }
         )
@@ -406,26 +391,20 @@ def evaluate_parameter_grid(
     metrics = pd.DataFrame(metric_rows)
     ranked = metrics.assign(
         _subject_success=metrics["subject_success_rate"].fillna(-1),
-        _lead_distance=metrics["lead_distance_from_45"].replace(
-            [np.inf, -np.inf], 1_000_000
-        ),
     ).sort_values(
         [
-            "early_false_constraint_ok",
+            "false_alarm_constraint_ok",
             "_subject_success",
-            "early_false_count",
+            "false_alarm_count",
             "miss_count",
-            "too_late_count",
-            "_lead_distance",
+            "at_or_after_count",
             "h",
             "duration_seconds",
         ],
-        ascending=[False, False, True, True, True, True, False, False],
+        ascending=[False, False, True, True, True, False, False],
         kind="stable",
     )
-    ranked = ranked.drop(columns=["_subject_success", "_lead_distance"]).reset_index(
-        drop=True
-    )
+    ranked = ranked.drop(columns=["_subject_success"]).reset_index(drop=True)
     ranked.insert(0, "rank", np.arange(1, len(ranked) + 1))
     return ranked, details
 
@@ -485,7 +464,7 @@ def save_heatmaps(ranked: pd.DataFrame, output_dir: Path) -> None:
         ranked,
         value_column="subject_success_rate",
         output_path=output_dir / "success_heatmap.png",
-        title="Subject-balanced success rate (lead 30–60 s)",
+        title="Subject-balanced success rate (warning before target)",
         color_map="YlGn",
         annotation=lambda row: (
             f"{int(row.success_count)}/{int(row.evaluable_count)}\n"
@@ -496,26 +475,25 @@ def save_heatmaps(ranked: pd.DataFrame, output_dir: Path) -> None:
     )
     _save_heatmap(
         ranked,
-        value_column="early_false_count",
-        output_path=output_dir / "too_early_heatmap.png",
-        title="Too-early and no-target false alarms (lower is better)",
+        value_column="false_alarm_count",
+        output_path=output_dir / "false_alarm_heatmap.png",
+        title="No-target false alarms (lower is better)",
         color_map="Reds",
-        annotation=lambda row: str(int(row.early_false_count)),
+        annotation=lambda row: str(int(row.false_alarm_count)),
         vmin=0,
     )
     _save_heatmap(
         ranked,
         value_column="median_success_lead",
         output_path=output_dir / "median_lead_heatmap.png",
-        title="Median lead among successful records (target center = 45 s)",
+        title="Median lead among successful records",
         color_map="viridis",
         annotation=lambda row: (
             "--"
             if pd.isna(row.median_success_lead)
             else f"{float(row.median_success_lead):.1f}"
         ),
-        vmin=30,
-        vmax=60,
+        vmin=0,
     )
 
 
@@ -543,15 +521,15 @@ def save_best_overview(
         alarm = detail["alarm_second"]
         target = recording.target_second
         if target is not None:
-            target_start = max(recording.analysis_start_second, target - 60)
-            target_end = target - 30
+            target_start = recording.analysis_start_second
+            target_end = target
             if target_start <= target_end:
                 axis.axvspan(
                     target_start,
                     target_end,
                     color="#D9EAD3",
                     alpha=0.5,
-                    label="Target lead 30–60 s",
+                    label="Successful warning range",
                 )
             axis.axvline(target, color="#C00000", linestyle="-.", label="Behavioral fatigue")
         if pd.notna(alarm):
@@ -676,10 +654,13 @@ def write_outputs(
         "subjects": sorted({item.subject_id for item in recordings}),
         "h": best_h,
         "confirmation_seconds": best_duration,
-        "early_false_constraint_met": bool(best["early_false_constraint_ok"]),
+        "false_alarm_constraint_met": bool(best["false_alarm_constraint_ok"]),
         "selection_rule": (
-            "early/false alarms <= 1; then maximize subject-balanced success; "
-            "then minimize misses/late warnings; then lead nearest 45 seconds"
+            "no-target false alarms <= "
+            f"{int(best['maximum_false_alarm_count'])}; "
+            "then maximize subject-balanced success; "
+            "then minimize false alarms, misses, and at/after-target warnings; "
+            "then prefer higher h and longer confirmation"
         ),
         "metrics": {
             key: (None if pd.isna(value) or value in (math.inf, -math.inf) else value)
@@ -693,7 +674,7 @@ def write_outputs(
     return {
         "workbook": workbook_path,
         "success_heatmap": output_dir / "success_heatmap.png",
-        "too_early_heatmap": output_dir / "too_early_heatmap.png",
+        "false_alarm_heatmap": output_dir / "false_alarm_heatmap.png",
         "median_lead_heatmap": output_dir / "median_lead_heatmap.png",
         "overview": overview_path,
         "configuration": configuration_path,
@@ -707,12 +688,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--expected-records", type=int, default=7)
+    parser.add_argument("--expected-records", type=int, default=10)
     parser.add_argument("--h-values", nargs="+", type=float, default=list(H_VALUES))
     parser.add_argument(
         "--duration-values", nargs="+", type=int, default=list(DURATION_VALUES)
     )
-    parser.add_argument("--maximum-early-false-count", type=int, default=1)
+    parser.add_argument(
+        "--maximum-false-alarm-count",
+        "--maximum-early-false-count",
+        dest="maximum_false_alarm_count",
+        type=int,
+        default=1,
+        help="Maximum allowed warnings for records without a fatigue target.",
+    )
     return parser.parse_args()
 
 
@@ -728,7 +716,7 @@ def main() -> None:
             recordings,
             h_values=args.h_values,
             duration_values=args.duration_values,
-            maximum_early_false_count=args.maximum_early_false_count,
+            maximum_false_alarm_count=args.maximum_false_alarm_count,
         )
         outputs = write_outputs(
             recordings,
@@ -749,11 +737,11 @@ def main() -> None:
         f"h={float(best['h']):.2f}, "
         f"持續{int(best['duration_seconds'])}秒, "
         f"成功={int(best['success_count'])}/{int(best['evaluable_count'])}, "
-        f"太早/假警報={int(best['early_false_count'])}"
+        f"無目標假警報={int(best['false_alarm_count'])}"
     )
-    if not bool(best["early_false_constraint_ok"]):
+    if not bool(best["false_alarm_constraint_ok"]):
         print(
-            "警告：沒有任何組合符合太早/假警報上限；"
+            "警告：沒有任何組合符合無目標假警報上限；"
             "此設定只是目前搜尋範圍中的相對最佳者，不應直接視為定案。"
         )
     for name, path in outputs.items():
