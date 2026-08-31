@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import (
     TRAINING_POOLED_ALPHA_SCALE,
     TRAINING_POOLED_EYE_SCALE,
+    compare_first_fatigue_times,
 )
 
 try:
@@ -109,12 +110,23 @@ def calculate_plot_end_second(
     first_fatigue_time: float | None,
     all_time: float,
     seconds_after_fatigue: int = PLOT_SECONDS_AFTER_FIRST_FATIGUE,
+    first_physiological_time: float | None = None,
+    seconds_after_later_fatigue: int = 30,
 ) -> float:
-    """Return ``min(first fatigue + tail, all time)`` for the plot x-limit."""
+    """Keep the default tail and include a later first physiological event."""
     if first_fatigue_time is None:
         return float(all_time)
+    requested_end = float(first_fatigue_time) + seconds_after_fatigue
+    if (
+        first_physiological_time is not None
+        and first_physiological_time > first_fatigue_time
+    ):
+        requested_end = max(
+            requested_end,
+            float(first_physiological_time) + seconds_after_later_fatigue,
+        )
     return min(
-        float(first_fatigue_time) + seconds_after_fatigue,
+        requested_end,
         float(all_time),
     )
 
@@ -222,7 +234,7 @@ def annotate_fatigue_timing(
     *,
     show_physiological: bool = True,
 ) -> tuple[float | None, float | None]:
-    """在主圖標出 phase 2、兩種首次疲勞與兩者之間的 lead time。"""
+    """在主圖標出 Phase 2 的第一次生理與行為疲勞及其時間差。"""
     if show_physiological:
         ax.axvline(
             PHASE_2_START_SECOND,
@@ -303,8 +315,22 @@ def annotate_fatigue_timing(
         and behavioral_second is not None
         and behavioral_second > PHASE_2_START_SECOND
     ):
-        lead_time = behavioral_second - physiological_second
-        lead_time_text = format_plot_second(lead_time)
+        timing = compare_first_fatigue_times(
+            behavioral_second,
+            physiological_second,
+        )
+        if timing.relation == "PHYSIOLOGICAL_BEFORE_BEHAVIOR":
+            timing_label = (
+                "Physiological Lead: "
+                f"{format_plot_second(timing.lead_seconds)} s"
+            )
+        elif timing.relation == "BEHAVIOR_BEFORE_PHYSIOLOGICAL":
+            timing_label = (
+                "Physiological Lag: "
+                f"{format_plot_second(timing.lag_seconds)} s"
+            )
+        else:
+            timing_label = "Simultaneous: 0 s"
         midpoint = (physiological_second + behavioral_second) / 2
 
         if physiological_second != behavioral_second:
@@ -326,7 +352,7 @@ def annotate_fatigue_timing(
         ax.text(
             midpoint,
             0.49,
-            f"Lead Time: {lead_time_text} s",
+            timing_label,
             transform=ax.get_xaxis_transform(),
             ha="center",
             va="bottom",
@@ -379,7 +405,11 @@ class EEGBrowserGUI:
         self.add_file_row(top_frame, "眼動 數據 (.dat):", self.path_eye, False)
         threshold_row = tk.Frame(top_frame)
         threshold_row.pack(fill='x', pady=2)
-        tk.Label(threshold_row, text="個人化RT門檻:", width=15).pack(side='left')
+        tk.Label(
+            threshold_row,
+            text="Phase 2 個人化RT門檻:",
+            width=22,
+        ).pack(side='left')
         tk.Entry(
             threshold_row,
             textvariable=self.personalized_rt_threshold,
@@ -433,7 +463,7 @@ class EEGBrowserGUI:
         except ValueError:
             messagebox.showwarning(
                 "警告",
-                "個人化RT門檻與兩個Pooled Scale都必須是大於0的有限數值。",
+                "Phase 2個人化RT門檻與兩個Pooled Scale都必須是大於0的有限數值。",
             )
             return
 
@@ -558,14 +588,22 @@ class EEGBrowserGUI:
             alpha_baseline = pred_df.attrs.get("alpha_baseline")
             eye_baseline = pred_df.attrs.get("eye_baseline")
             summary_rows = [
-                ("Personalized RT Threshold", rt_threshold),
                 (
-                    "Behavioral Forward Global RT Window Seconds",
+                    "Phase 1 Fixed RT Threshold",
+                    state_df.attrs["phase_one_rt_threshold"],
+                ),
+                ("Phase 2 Personalized RT Threshold", rt_threshold),
+                (
+                    "Behavioral Global RT Window Seconds",
                     state_df.attrs["global_rt_window_seconds"],
                 ),
                 (
-                    "Behavioral Rule",
-                    state_df.attrs["behavioral_rule"],
+                    "Phase 1 Behavioral Rule",
+                    state_df.attrs["phase_one_behavioral_rule"],
+                ),
+                (
+                    "Phase 2 Behavioral Rule",
+                    state_df.attrs["phase_two_behavioral_rule"],
                 ),
                 ("Alpha Window Seconds", 30),
                 ("Eye Window Seconds", 30),
@@ -585,6 +623,22 @@ class EEGBrowserGUI:
                 (
                     "Behavioral Confirmation Second",
                     state_df.attrs.get("first_confirmation_second"),
+                ),
+                (
+                    "First Physiological Fatigue Second",
+                    first_physiological_second,
+                ),
+                (
+                    "Fatigue Timing Relation",
+                    fatigue_timing.relation if fatigue_timing else None,
+                ),
+                (
+                    "Physiological Lead Seconds",
+                    fatigue_timing.lead_seconds if fatigue_timing else None,
+                ),
+                (
+                    "Physiological Lag Seconds",
+                    fatigue_timing.lag_seconds if fatigue_timing else None,
                 ),
                 ("Phase One Blocked", state_df.attrs["phase_one_blocked"]),
                 ("Recording End Second", recording_end_second),
@@ -611,15 +665,26 @@ class EEGBrowserGUI:
                 "Joint_Z_Min",
                 f"Both_Z>={algorithm_config.score_threshold:g}",
                 "Consecutive_Seconds", "React_time",
-                "Personalized_RT_Threshold", "Eye_Alarm", "Alpha_Alarm",
-                "Pred_State", "Behavioral_State", "Forward_Global_RT",
-                "Forward_Window_Start", "Forward_Window_End",
-                "Complete_Forward_Window", "Future_RT_Count",
-                "Local>=Threshold", "Forward_Global>=Threshold",
-                "Forward_Confirmed_Fatigue", "Behavioral_Trigger",
+                "Phase_2_Personalized_RT_Threshold", "Eye_Alarm", "Alpha_Alarm",
+                "Pred_State", "Behavioral_State", "Behavioral_Phase",
+                "Global_Direction", "Global_RT", "Window_Start", "Window_End",
+                "Complete_Global_Window", "Past_RT_Count", "Future_RT_Count",
+                "Supporting_RT_Count", "Active_RT_Threshold",
+                "Local>=Threshold", "Global>=Threshold",
+                "Global_Confirmed_Fatigue", "Behavioral_Trigger",
                 "Confirmation_Second", "Trigger_Reason",
             ]
             ws.append(headers)
+
+            def excel_bool(value):
+                if value is None or pd.isna(value):
+                    return ""
+                return int(bool(value))
+
+            def excel_value(value):
+                if value is None or pd.isna(value):
+                    return ""
+                return value
 
             for _, row in pred_df.iterrows():
                 sec = row['second']
@@ -641,17 +706,22 @@ class EEGBrowserGUI:
                     int(row['alpha_alarm']),
                     int(row['pred_state']),
                     int(behavior['state_val']) if behavior else "",
-                    behavior['global_rt'] if behavior else "",
-                    behavior['window_start_second'] if behavior else "",
-                    behavior['window_end_second'] if behavior else "",
-                    int(behavior['has_full_forward_window']) if behavior else "",
-                    int(behavior['future_event_count']) if behavior else "",
-                    int(behavior['local_exceed']) if behavior else "",
-                    int(behavior['global_exceed']) if behavior else "",
-                    int(behavior['sustained_fatigue']) if behavior else "",
-                    int(behavior['behavioral_fatigue']) if behavior else "",
-                    behavior['confirmation_second'] if behavior else "",
-                    behavior['trigger_reason'] if behavior else "",
+                    excel_value(behavior['phase']) if behavior else "",
+                    excel_value(behavior['global_direction']) if behavior else "",
+                    excel_value(behavior['global_rt']) if behavior else "",
+                    excel_value(behavior['window_start_second']) if behavior else "",
+                    excel_value(behavior['window_end_second']) if behavior else "",
+                    excel_bool(behavior['has_full_global_window']) if behavior else "",
+                    excel_value(behavior['past_event_count']) if behavior else "",
+                    excel_value(behavior['future_event_count']) if behavior else "",
+                    excel_value(behavior['supporting_event_count']) if behavior else "",
+                    excel_value(behavior['active_threshold']) if behavior else "",
+                    excel_bool(behavior['local_exceed']) if behavior else "",
+                    excel_bool(behavior['global_exceed']) if behavior else "",
+                    excel_bool(behavior['sustained_fatigue']) if behavior else "",
+                    excel_bool(behavior['behavioral_fatigue']) if behavior else "",
+                    excel_value(behavior['confirmation_second']) if behavior else "",
+                    excel_value(behavior['trigger_reason']) if behavior else "",
                 ])
             excel_filename = figure_output_path.with_suffix(".xlsx")
             excel_filename.parent.mkdir(parents=True, exist_ok=True)
@@ -675,10 +745,27 @@ class EEGBrowserGUI:
             "state_val",
             start_second=0,
         )
+        phase_one_blocked = bool(
+            state_df.attrs.get("phase_one_blocked", False)
+        )
+        first_physiological_second = (
+            find_first_fatigue_onset(pred_df, "pred_state")
+            if not phase_one_blocked
+            else None
+        )
+        fatigue_timing = (
+            compare_first_fatigue_times(
+                first_behavioral_second,
+                first_physiological_second,
+            )
+            if not phase_one_blocked
+            else None
+        )
         all_time = float(master_df["second"].max())
         plot_end_second = calculate_plot_end_second(
             first_behavioral_second,
             all_time,
+            first_physiological_time=first_physiological_second,
         )
 
         try:
@@ -692,14 +779,7 @@ class EEGBrowserGUI:
                 phase_one_blocked = bool(
                     state_df.attrs.get("phase_one_blocked", False)
                 )
-                if phase_one_blocked:
-                    fig, ax_top = plt.subplots(figsize=(12, 6.5))
-                    ax_score = None
-                else:
-                    fig, (ax_top, ax_score) = plt.subplots(
-                        2, 1, figsize=(12, 8.5), sharex=True,
-                        gridspec_kw={"height_ratios": [1.35, 1]},
-                    )
+                fig, ax_top = plt.subplots(figsize=(12, 6.5))
 
                 # Keep reaction time as a subdued background layer.  Drawing
                 # the main axis above the twin axis prevents these stems from
@@ -707,17 +787,33 @@ class EEGBrowserGUI:
                 ax_twin = ax_top.twinx()
                 ax_top.set_zorder(ax_twin.get_zorder() + 1)
                 ax_top.patch.set_visible(False)
-                ax_twin.axhline(
-                    rt_threshold,
+                ax_twin.hlines(
+                    algorithm_config.phase_one_rt_threshold,
+                    xmin=0,
+                    xmax=min(PHASE_2_START_SECOND, plot_end_second),
                     color='#2F5597',
                     linestyle='--',
                     linewidth=1.6,
                     label=(
-                        'Personalized RT Threshold '
-                        f'({rt_threshold:g} s)'
+                        'Phase 1 Fixed RT Threshold '
+                        f'({algorithm_config.phase_one_rt_threshold:g} s)'
                     ),
                     zorder=2,
                 )
+                if not phase_one_blocked and plot_end_second > PHASE_2_START_SECOND:
+                    ax_twin.hlines(
+                        rt_threshold,
+                        xmin=PHASE_2_START_SECOND,
+                        xmax=plot_end_second,
+                        color='#2F5597',
+                        linestyle='-.',
+                        linewidth=1.6,
+                        label=(
+                            'Phase 2 Personalized RT Threshold '
+                            f'({rt_threshold:g} s)'
+                        ),
+                        zorder=2,
+                    )
 
                 reaction_events_df = state_df.dropna(subset=['react_time'])
                 regular_reactions = reaction_events_df[
@@ -799,60 +895,15 @@ class EEGBrowserGUI:
                     zorder=1,
                 )
 
-                physiological_second, behavioral_second = annotate_fatigue_timing(
+                annotate_fatigue_timing(
                     ax_top,
                     state_df,
                     pred_df,
                     show_physiological=not phase_one_blocked,
                 )
 
-                if ax_score is not None:
-                    ax_score.plot(
-                        pred_df['second'], pred_df['z_alpha'],
-                        color='#7030A0', linewidth=1, label='Z-Alpha',
-                    )
-                    ax_score.plot(
-                        pred_df['second'], pred_df['z_eye'],
-                        color='#ED7D31', linewidth=1, label='Z-Eye',
-                    )
-                    ax_score.axhline(
-                        algorithm_config.score_threshold,
-                        color='#C00000', linestyle='--', linewidth=1.4,
-                        label=f'h = {algorithm_config.score_threshold:g}',
-                    )
-                    ax_score.axvline(
-                        PHASE_2_START_SECOND,
-                        color='#4472C4', linestyle='--', linewidth=1.2,
-                        label='Phase 2 Start',
-                    )
-                    if physiological_second is not None:
-                        ax_score.axvline(
-                            physiological_second,
-                            color='#008C95', linestyle='-.', linewidth=1.8,
-                            label='Confirmed Physiological Warning',
-                        )
-                    if behavioral_second is not None:
-                        ax_score.axvline(
-                            behavioral_second,
-                            color='#C00000', linestyle='-.', linewidth=1.8,
-                            label='Behavioral Fatigue',
-                        )
-                    ax_score.set_ylabel("Robust Z")
-                    ax_score.set_xlabel("Test Time (Seconds)")
-                    ax_score.grid(True, linestyle='--', alpha=0.3)
-                    ax_score.set_title(
-                        "Z-Alpha and Z-Eye both >= "
-                        f"{algorithm_config.score_threshold:g} for "
-                        f"{algorithm_config.confirmation_seconds} seconds"
-                    )
-                    ax_score.legend(
-                        loc='upper right', fontsize=8, framealpha=1,
-                        facecolor='white', edgecolor='#808080',
-                    )
-                else:
-                    ax_top.set_xlabel("Test Time (Seconds)")
-
                 ax_top.set_ylabel("Total Accumulation")
+                ax_top.set_xlabel("Test Time (Seconds)")
                 ax_twin.set_ylabel("Reaction Time (Seconds)")
                 ax_twin.set_ylim(0, REACTION_TIME_AXIS_MAX)
                 ax_twin.set_yticks(
@@ -867,9 +918,17 @@ class EEGBrowserGUI:
                     reaction_events_df,
                 )
                 ax_top.set_xlim(0, plot_end_second)
+                threshold_title = (
+                    "Phase 1 fixed RT threshold = "
+                    f"{algorithm_config.phase_one_rt_threshold:g} s"
+                )
+                if not phase_one_blocked:
+                    threshold_title += (
+                        "; Phase 2 personalized threshold = "
+                        f"{rt_threshold:g} s"
+                    )
                 ax_top.set_title(
-                    "The Evolution of Driving States\n"
-                    f"Personalized RT threshold = {rt_threshold:g} s",
+                    "The Evolution of Driving States\n" + threshold_title,
                     fontsize=14,
                     pad=15,
                 )

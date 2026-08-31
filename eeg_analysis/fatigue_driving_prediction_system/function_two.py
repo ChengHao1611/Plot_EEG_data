@@ -46,6 +46,7 @@ from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import
     TRAINING_POOLED_ALPHA_SCALE,
     TRAINING_POOLED_EYE_SCALE,
     classify_lead_time,
+    compare_first_fatigue_times,
     compute_fatigue_score,
 )
 from eeg_analysis.fatigue_driving_prediction_system.training_baseline import (
@@ -65,8 +66,8 @@ class FunctionTwoConfig:
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
     eye_window_seconds: int = 30
     alpha_window_seconds: int = 30
-    score_threshold: float = 0.8
-    confirmation_seconds: int = 4
+    score_threshold: float = 1
+    confirmation_seconds: int = 1
     minimum_lead_seconds: int = 30
     maximum_lead_seconds: int = 60
     plot_seconds_before_fatigue: int = 90
@@ -120,6 +121,8 @@ class FunctionTwoResult:
     eye_seconds: tuple[int, ...]
     alpha_result: AlphaDetectionResult | None
     output_dir: Path
+    timing_relation: str | None = None
+    lag_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -388,7 +391,9 @@ def write_training_batch_summary(
             "第一次生理警報秒",
             "第一次生理警報原因",
             "預測成功",
+            "疲勞先後關係",
             "提前秒數",
+            "落後秒數",
             "輸出資料夾",
         ]
     )
@@ -426,7 +431,9 @@ def write_training_batch_summary(
                 phase_two.first_warning_second if phase_two else None,
                 phase_two.first_warning_reason if phase_two else None,
                 phase_two.prediction_success if phase_two else None,
+                getattr(phase_two, "timing_relation", None) if phase_two else None,
                 phase_two.lead_seconds if phase_two else None,
+                getattr(phase_two, "lag_seconds", None) if phase_two else None,
                 str(output_dir) if output_dir else None,
             ]
         )
@@ -515,6 +522,8 @@ def write_function_two_workbook(
         ),
         ("第一次警報_秒", result.first_warning_second),
         ("第一次警報原因", result.first_warning_reason),
+        ("第一個生理疲勞_秒", result.first_warning_second),
+        ("疲勞先後關係", result.timing_relation),
         (
             "成功提前預測",
             "是"
@@ -524,6 +533,7 @@ def write_function_two_workbook(
             else None,
         ),
         ("提前秒數", result.lead_seconds),
+        ("落後秒數", result.lag_seconds),
         ("逐秒資料筆數", len(result.features)),
     ]
     for row in summary_rows:
@@ -715,12 +725,23 @@ def save_pre_fatigue_plot(
         axis.set_xlim(min(relative_seconds), 0.5)
         axis.legend(loc="best")
 
-    warning_text = (
-        f"第一次警報：第{result.first_warning_second}秒，"
-        f"提前{result.lead_seconds}秒，原因={result.first_warning_reason}"
-        if result.first_warning_second is not None
-        else "第一個疲勞事件前未發出警報"
-    )
+    if result.first_warning_second is None:
+        warning_text = "未找到生理疲勞"
+    elif result.lag_seconds is not None and result.lag_seconds > 0:
+        warning_text = (
+            f"第一次警報：第{result.first_warning_second}秒，"
+            f"落後{result.lag_seconds}秒，原因={result.first_warning_reason}"
+        )
+    elif result.lead_seconds is not None and result.lead_seconds > 0:
+        warning_text = (
+            f"第一次警報：第{result.first_warning_second}秒，"
+            f"提前{result.lead_seconds}秒，原因={result.first_warning_reason}"
+        )
+    else:
+        warning_text = (
+            f"第一次警報：第{result.first_warning_second}秒，"
+            f"與行為疲勞同時，原因={result.first_warning_reason}"
+        )
     figure.suptitle(
         f"{result.record_id}：第一個疲勞事件前{config.plot_seconds_before_fatigue}秒\n"
         f"疲勞事件=第{target_second}秒；{warning_text}",
@@ -739,7 +760,7 @@ def save_behavioral_rt_debug_plot(
     output_path: str | Path,
     config: FunctionTwoConfig = DEFAULT_CONFIG,
 ) -> Path | None:
-    """Plot Local RT, forward Global RT, active thresholds, and onset."""
+    """Plot Phase-1 backward and Phase-2 forward behavioral RT evidence."""
     if not evaluations:
         return None
 
@@ -755,22 +776,44 @@ def save_behavioral_rt_debug_plot(
     )
     seconds = [item.event.event_second for item in ordered]
     local_values = [item.event.reaction_time for item in ordered]
-    global_values = [item.global_rt for item in ordered]
     threshold_values = [item.active_threshold for item in ordered]
 
     plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
     figure, axis = plt.subplots(figsize=(14, 7))
     axis.scatter(seconds, local_values, color="#4472C4", s=30, label="Local RT")
-    axis.plot(
-        seconds,
-        global_values,
-        color="#ED7D31",
-        marker="o",
-        markersize=3,
-        linewidth=1.7,
-        label=f"Forward Global RT（含當次，往後{config.global_rt_window_seconds}秒）",
-    )
+    backward_evaluations = [
+        item for item in ordered if item.window_direction == "BACKWARD"
+    ]
+    forward_evaluations = [
+        item for item in ordered if item.window_direction == "FORWARD"
+    ]
+    if backward_evaluations:
+        axis.plot(
+            [item.event.event_second for item in backward_evaluations],
+            [item.global_rt for item in backward_evaluations],
+            color="#70AD47",
+            marker="o",
+            markersize=3,
+            linewidth=1.7,
+            label=(
+                "Phase 1 Backward Global RT（含當次，"
+                f"回看{config.global_rt_window_seconds}秒）"
+            ),
+        )
+    if forward_evaluations:
+        axis.plot(
+            [item.event.event_second for item in forward_evaluations],
+            [item.global_rt for item in forward_evaluations],
+            color="#ED7D31",
+            marker="o",
+            markersize=3,
+            linewidth=1.7,
+            label=(
+                "Phase 2 Forward Global RT（含當次，"
+                f"往後{config.global_rt_window_seconds}秒）"
+            ),
+        )
     axis.step(
         seconds,
         threshold_values,
@@ -935,10 +978,10 @@ def analyze_function_two(
             recording_end_second,
             signal_recording_end_second,
         )
-        requested_end_second = (
-            target_event.event_second if target_event else recording_end_second
-        )
-        analysis_end_second = min(requested_end_second, recording_end_second)
+        # Behavioral and physiological fatigue are independent Phase-2
+        # outcomes.  Keep analysing to the end of the recording so the first
+        # physiological fatigue can still be found after behavioral fatigue.
+        analysis_end_second = recording_end_second
         analysis_start_second = config.baseline_end_second + 1
         if analysis_end_second < analysis_start_second:
             return _empty_result(
@@ -999,7 +1042,12 @@ def analyze_function_two(
     first_warning_second = first_warning.second if first_warning else None
     first_warning_reason = first_warning.warning_reason if first_warning else None
 
-    lead_seconds: int | None = None
+    timing = compare_first_fatigue_times(
+        target_event.event_second if target_event else None,
+        first_warning_second,
+    )
+    lead_seconds = timing.lead_seconds
+    lag_seconds = timing.lag_seconds
     prediction_success: bool | None = None
     if target_event is not None:
         target_window_start = max(
@@ -1007,11 +1055,17 @@ def analyze_function_two(
             target_event.event_second - config.maximum_lead_seconds,
         )
         target_window_end = target_event.event_second - config.minimum_lead_seconds
-        if target_window_start > target_window_end:
+        if timing.relation == "BEHAVIOR_BEFORE_PHYSIOLOGICAL":
+            status = "BEHAVIOR_BEFORE_PHYSIOLOGICAL"
+            prediction_success = False
+        elif timing.relation == "SIMULTANEOUS":
+            status = "SIMULTANEOUS_PHYSIOLOGICAL_AND_BEHAVIORAL"
+            prediction_success = False
+        elif target_window_start > target_window_end:
             status = "NOT_EVALUABLE_FOR_REQUIRED_LEAD"
             prediction_success = None
         elif first_warning_second is not None:
-            lead_seconds = target_event.event_second - first_warning_second
+            assert lead_seconds is not None
             status = classify_lead_time(
                 lead_seconds,
                 min_lead_seconds=config.minimum_lead_seconds,
@@ -1041,7 +1095,7 @@ def analyze_function_two(
         first_warning_second=first_warning_second,
         first_warning_reason=first_warning_reason,
         prediction_success=prediction_success,
-        lead_seconds=lead_seconds,
+        lead_seconds=int(lead_seconds) if lead_seconds is not None else None,
         features=tuple(features),
         post_baseline_events=tuple(
             evaluation.event
@@ -1056,6 +1110,8 @@ def analyze_function_two(
         eye_seconds=combined_eye_seconds,
         alpha_result=alpha_result,
         output_dir=resolved_output_dir,
+        timing_relation=timing.relation,
+        lag_seconds=int(lag_seconds) if lag_seconds is not None else None,
     )
     write_function_two_workbook(
         result, resolved_output_dir / "function_two_results.xlsx", config
@@ -1248,6 +1304,12 @@ def main() -> None:
             else "無"
         )
     )
+    if result.timing_relation == "PHYSIOLOGICAL_BEFORE_BEHAVIOR":
+        print(f"生理疲勞提前：{result.lead_seconds}秒")
+    elif result.timing_relation == "BEHAVIOR_BEFORE_PHYSIOLOGICAL":
+        print(f"生理疲勞落後：{result.lag_seconds}秒")
+    elif result.timing_relation == "SIMULTANEOUS":
+        print("生理與行為疲勞同時發生。")
     print(f"輸出資料夾：{result.output_dir}")
 
 

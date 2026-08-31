@@ -37,7 +37,7 @@ from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
     PHASE_ONE_DURATION_SECONDS,
     PHASE_ONE_RT_THRESHOLD,
     calculate_personalized_rt_threshold,
-    evaluate_behavioral_fatigue_events,
+    evaluate_backward_behavioral_fatigue_events,
     first_behavioral_fatigue,
 )
 from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import (
@@ -112,12 +112,12 @@ def evaluate_phase_one_behavioral_fatigue(
     *,
     recording_end_second: int | None = None,
 ) -> tuple[BehavioralFatigueEvaluation, ...]:
-    """Evaluate Phase 1 candidate onsets using their forward 90-second data."""
-    evaluations = evaluate_behavioral_fatigue_events(
+    """Evaluate Phase 1 onsets using complete backward 90-second data."""
+    evaluations = evaluate_backward_behavioral_fatigue_events(
         events,
         config.fatigue_reaction_threshold,
         global_window_seconds=config.global_rt_window_seconds,
-        recording_end_second=recording_end_second,
+        recording_start_second=config.behavioral_start_second,
     )
     return tuple(
         evaluation
@@ -168,10 +168,10 @@ def write_function_one_workbook(
         ("Baseline開始秒", config.baseline_start_second),
         ("Baseline結束秒", config.baseline_end_second),
         ("固定疲勞RT門檻_秒", config.fatigue_reaction_threshold),
-        ("Forward Global RT窗口_秒", config.global_rt_window_seconds),
+        ("Backward Global RT窗口_秒", config.global_rt_window_seconds),
         ("前300秒RT事件數", len(result.events)),
         (
-            "前300秒Local與Forward Global確認疲勞事件數",
+            "前300秒Local與Backward Global確認疲勞事件數",
             sum(item.sustained_fatigue for item in result.behavioral_evaluations),
         ),
         ("RT平均Baseline", result.rt_mean),
@@ -233,7 +233,7 @@ def write_function_one_workbook(
             else None,
         ),
         (
-            "觸發Forward Global RT_秒",
+            "觸發Backward Global RT_秒",
             result.trigger_evaluation.global_rt if result.trigger_evaluation else None,
         ),
         (
@@ -262,16 +262,16 @@ def write_function_one_workbook(
             "導正開始時間_秒",
             "向上取整事件秒數",
             "Local RT_秒",
-            "Forward Global RT_秒",
-            "Forward窗口開始秒",
-            "Forward窗口結束秒",
+            "Backward Global RT_秒",
+            "Backward窗口開始秒",
+            "Backward窗口結束秒",
             "Phase",
             "Active Threshold_秒",
-            "具完整90秒Forward窗口",
-            "後續RT事件數",
+            "具完整90秒Backward窗口",
+            "先前不同秒RT事件數",
             "Local>=Threshold",
-            "Forward Global>=Threshold",
-            "Local+Forward Global確認疲勞",
+            "Backward Global>=Threshold",
+            "Local+Backward Global確認疲勞",
             "Behavioral Fatigue",
             "確認秒",
             "觸發原因",
@@ -299,7 +299,7 @@ def write_function_one_workbook(
                 "Phase 1",
                 evaluation.active_threshold,
                 evaluation.has_full_global_window,
-                evaluation.future_event_count,
+                evaluation.past_event_count,
                 evaluation.local_exceed,
                 evaluation.global_exceed,
                 evaluation.sustained_fatigue,
@@ -361,7 +361,10 @@ def save_rt_validation_plot(
             marker="o",
             markersize=3,
             linewidth=1.6,
-            label=f"Forward Global RT（含當次，往後{config.global_rt_window_seconds}秒）",
+            label=(
+                "Backward Global RT（含當次，"
+                f"回看{config.global_rt_window_seconds}秒）"
+            ),
             zorder=2,
         )
     axis.axhline(
@@ -383,7 +386,7 @@ def save_rt_validation_plot(
         event = result.trigger_evaluation.event
         axis.annotate(
             f"{event.event_second}s, {result.trigger_evaluation.trigger_reason}\n"
-            f"Local={event.reaction_time:.1f}, Forward Global={result.trigger_evaluation.global_rt:.2f}\n"
+            f"Local={event.reaction_time:.1f}, Backward Global={result.trigger_evaluation.global_rt:.2f}\n"
             f"Confirmed={result.trigger_evaluation.confirmation_second}s",
             (event.event_second, event.reaction_time),
             xytext=(8, 10),

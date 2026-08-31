@@ -10,7 +10,10 @@ import pandas as pd
 from eeg_analysis.fatigue_driving_prediction_system.behavioral_fatigue import (
     GLOBAL_RT_WINDOW_SECONDS,
     PHASE_ONE_DURATION_SECONDS,
+    PHASE_ONE_RT_THRESHOLD,
+    evaluate_backward_behavioral_fatigue_events,
     evaluate_behavioral_fatigue_events,
+    first_behavioral_fatigue,
 )
 from eeg_analysis.fatigue_driving_prediction_system.physiological_fatigue import (
     TRAINING_POOLED_ALPHA_SCALE,
@@ -27,13 +30,14 @@ from eeg_analysis.statistics_30s_alpha_eyeblink_of_fatigue.record_status_and_eye
 
 @dataclass(frozen=True)
 class FatigueAlgorithmConfig:
-    """Phase-2 physiological warning settings."""
+    """Observe Phase-1/2 behavioral and physiological settings."""
 
     baseline_end_second: int = PHASE_ONE_DURATION_SECONDS
+    phase_one_rt_threshold: float = PHASE_ONE_RT_THRESHOLD
     global_rt_window_seconds: int = GLOBAL_RT_WINDOW_SECONDS
     complete_window_start_second: int = 30
-    score_threshold: float = 0.8
-    confirmation_seconds: int = 4
+    score_threshold: float = 1
+    confirmation_seconds: int = 1
     pooled_alpha_scale: float = TRAINING_POOLED_ALPHA_SCALE
     pooled_eye_scale: float = TRAINING_POOLED_EYE_SCALE
 
@@ -48,14 +52,7 @@ def classify_actual_states(
     *,
     recording_end_second: int | None = None,
 ) -> pd.DataFrame:
-    """Build the Function Two behavioral state from event-level RT data.
-
-    Event seconds are upward-rounded to integers and Local RT values use the
-    same conventional one-decimal rounding as the EDF parser. Forward Global RT
-    is the inclusive mean from each abnormal event through the following 90
-    seconds. The displayed behavioral state begins at the first forward-
-    confirmed trigger; an onset through second 300 represents Phase 1 rejection.
-    """
+    """Apply Function One backward screening, then Function Two forward RT."""
 
     events = events_df[["second", "react_time"]].copy()
     events["second"] = pd.to_numeric(events["second"], errors="coerce")
@@ -81,35 +78,112 @@ def classify_actual_states(
 
     personalized_rt_threshold = float(personalized_rt_threshold)
     if not math.isfinite(personalized_rt_threshold) or personalized_rt_threshold <= 0:
-        raise ValueError("個人化RT門檻必須是大於0的有限數值。")
+        raise ValueError("Phase 2個人化RT門檻必須是大於0的有限數值。")
 
-    evaluations = evaluate_behavioral_fatigue_events(
-        reaction_events,
-        personalized_rt_threshold,
-        global_window_seconds=config.global_rt_window_seconds,
-        recording_end_second=recording_end_second,
+    phase_one_evaluations = tuple(
+        evaluation
+        for evaluation in evaluate_backward_behavioral_fatigue_events(
+            reaction_events,
+            config.phase_one_rt_threshold,
+            global_window_seconds=config.global_rt_window_seconds,
+            recording_start_second=0,
+        )
+        if evaluation.event.event_second <= config.baseline_end_second
     )
+    phase_one_trigger = first_behavioral_fatigue(phase_one_evaluations)
+    phase_one_blocked = phase_one_trigger is not None
 
-    rows: list[dict[str, float | int | bool | str]] = []
+    phase_two_evaluations = (
+        tuple(
+            evaluation
+            for evaluation in evaluate_behavioral_fatigue_events(
+                reaction_events,
+                personalized_rt_threshold,
+                global_window_seconds=config.global_rt_window_seconds,
+                recording_end_second=recording_end_second,
+            )
+            if evaluation.event.event_second > config.baseline_end_second
+        )
+        if not phase_one_blocked
+        else ()
+    )
+    phase_two_trigger = first_behavioral_fatigue(phase_two_evaluations)
+    evaluations_by_index = {
+        evaluation.event.event_index: evaluation
+        for evaluation in (*phase_one_evaluations, *phase_two_evaluations)
+    }
+
+    rows: list[dict[str, object]] = []
     fatigue_active = False
-    for evaluation in evaluations:
-        fatigue_active = fatigue_active or evaluation.behavioral_fatigue
+    for event in reaction_events:
+        evaluation = evaluations_by_index.get(event.event_index)
+        if evaluation is not None:
+            fatigue_active = fatigue_active or evaluation.behavioral_fatigue
+            phase = (
+                "PHASE_1"
+                if event.event_second <= config.baseline_end_second
+                else "PHASE_2"
+            )
+            global_direction = evaluation.window_direction
+            global_rt = evaluation.global_rt
+            window_start = evaluation.window_start_second
+            window_end = evaluation.window_end_second
+            complete_window = evaluation.has_full_global_window
+            past_event_count = evaluation.past_event_count
+            future_event_count = evaluation.future_event_count
+            active_threshold = evaluation.active_threshold
+            local_exceed = evaluation.local_exceed
+            global_exceed = evaluation.global_exceed
+            sustained_fatigue = evaluation.sustained_fatigue
+            behavioral_fatigue = evaluation.behavioral_fatigue
+            confirmation_second = evaluation.confirmation_second
+            trigger_reason = evaluation.trigger_reason
+        else:
+            # A Phase-1 rejection stops all Phase-2 judgments, but later RT
+            # events remain in the table so the top chart can show them.
+            phase = "PHASE_2_SKIPPED"
+            global_direction = None
+            global_rt = None
+            window_start = None
+            window_end = None
+            complete_window = None
+            past_event_count = None
+            future_event_count = None
+            active_threshold = None
+            local_exceed = None
+            global_exceed = None
+            sustained_fatigue = None
+            behavioral_fatigue = None
+            confirmation_second = None
+            trigger_reason = None
+
         rows.append(
             {
-                "second": evaluation.event.event_second,
-                "react_time": evaluation.event.reaction_time,
-                "global_rt": evaluation.global_rt,
-                "window_start_second": evaluation.window_start_second,
-                "window_end_second": evaluation.window_end_second,
-                "has_full_forward_window": evaluation.has_full_global_window,
-                "future_event_count": evaluation.future_event_count,
-                "active_threshold": evaluation.active_threshold,
-                "local_exceed": evaluation.local_exceed,
-                "global_exceed": evaluation.global_exceed,
-                "sustained_fatigue": evaluation.sustained_fatigue,
-                "behavioral_fatigue": evaluation.behavioral_fatigue,
-                "confirmation_second": evaluation.confirmation_second,
-                "trigger_reason": evaluation.trigger_reason,
+                "second": event.event_second,
+                "react_time": event.reaction_time,
+                "phase": phase,
+                "global_direction": global_direction,
+                "global_rt": global_rt,
+                "window_start_second": window_start,
+                "window_end_second": window_end,
+                "has_full_global_window": complete_window,
+                "has_full_forward_window": (
+                    complete_window if global_direction == "FORWARD" else None
+                ),
+                "past_event_count": past_event_count,
+                "future_event_count": future_event_count,
+                "supporting_event_count": (
+                    past_event_count
+                    if global_direction == "BACKWARD"
+                    else future_event_count
+                ),
+                "active_threshold": active_threshold,
+                "local_exceed": local_exceed,
+                "global_exceed": global_exceed,
+                "sustained_fatigue": sustained_fatigue,
+                "behavioral_fatigue": behavioral_fatigue,
+                "confirmation_second": confirmation_second,
+                "trigger_reason": trigger_reason,
                 "state_val": int(fatigue_active),
             }
         )
@@ -119,11 +193,16 @@ def classify_actual_states(
         columns=[
             "second",
             "react_time",
+            "phase",
+            "global_direction",
             "global_rt",
             "window_start_second",
             "window_end_second",
+            "has_full_global_window",
             "has_full_forward_window",
+            "past_event_count",
             "future_event_count",
+            "supporting_event_count",
             "active_threshold",
             "local_exceed",
             "global_exceed",
@@ -135,28 +214,30 @@ def classify_actual_states(
         ],
     )
     result.attrs["personalized_rt_threshold"] = float(personalized_rt_threshold)
+    result.attrs["phase_one_rt_threshold"] = config.phase_one_rt_threshold
+    result.attrs["phase_one_behavioral_rule"] = (
+        f"(Local>={config.phase_one_rt_threshold:g} AND "
+        f"BackwardGlobal{config.global_rt_window_seconds}>="
+        f"{config.phase_one_rt_threshold:g} AND complete backward window "
+        "AND prior RT exists)"
+    )
+    result.attrs["phase_two_behavioral_rule"] = (
+        "(Local>=personalized threshold AND "
+        f"ForwardGlobal{config.global_rt_window_seconds}>=personalized threshold "
+        "AND complete forward window AND future RT exists)"
+    )
     result.attrs["behavioral_rule"] = (
-        "(Local>=threshold AND "
-        f"ForwardGlobal{config.global_rt_window_seconds}>=threshold AND "
-        "complete forward window AND future RT exists)"
+        "Phase 1: "
+        + result.attrs["phase_one_behavioral_rule"]
+        + "; Phase 2: "
+        + result.attrs["phase_two_behavioral_rule"]
     )
     result.attrs["global_rt_window_seconds"] = config.global_rt_window_seconds
-    first_trigger = next(
-        (
-            evaluation
-            for evaluation in evaluations
-            if evaluation.behavioral_fatigue
-        ),
-        None,
-    )
+    first_trigger = phase_one_trigger or phase_two_trigger
     result.attrs["first_confirmation_second"] = (
         first_trigger.confirmation_second if first_trigger else None
     )
-    result.attrs["phase_one_blocked"] = any(
-        evaluation.behavioral_fatigue
-        and evaluation.event.event_second <= config.baseline_end_second
-        for evaluation in evaluations
-    )
+    result.attrs["phase_one_blocked"] = phase_one_blocked
     return result
 
 

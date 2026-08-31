@@ -48,6 +48,48 @@ class FatigueScore:
     score: float | None
 
 
+@dataclass(frozen=True)
+class FatigueTiming:
+    """Relative timing of the first Phase-2 behavioral/physiological events."""
+
+    relation: str
+    lead_seconds: int | float | None
+    lag_seconds: int | float | None
+
+
+def compare_first_fatigue_times(
+    behavioral_second: int | float | None,
+    physiological_second: int | float | None,
+) -> FatigueTiming:
+    """Compare only the first behavioral and physiological fatigue times."""
+    if behavioral_second is None and physiological_second is None:
+        return FatigueTiming("NO_FATIGUE_FOUND", None, None)
+    if behavioral_second is None:
+        return FatigueTiming("BEHAVIORAL_NOT_FOUND", None, None)
+    if physiological_second is None:
+        return FatigueTiming("PHYSIOLOGICAL_NOT_FOUND", None, None)
+
+    difference = float(behavioral_second) - float(physiological_second)
+    if difference > 0:
+        return FatigueTiming(
+            "PHYSIOLOGICAL_BEFORE_BEHAVIOR",
+            _normalize_time_difference(difference),
+            None,
+        )
+    if difference < 0:
+        return FatigueTiming(
+            "BEHAVIOR_BEFORE_PHYSIOLOGICAL",
+            None,
+            _normalize_time_difference(-difference),
+        )
+    return FatigueTiming("SIMULTANEOUS", 0, 0)
+
+
+def _normalize_time_difference(value: float) -> int | float:
+    """Keep integer-second results as integers without losing float inputs."""
+    return int(value) if value.is_integer() else value
+
+
 def ceil_to_one_decimal(value: float) -> float:
     """Round a finite value upward to one decimal place.
 
@@ -205,11 +247,13 @@ def classify_lead_time(
 
 __all__ = [
     "FatigueScore",
+    "FatigueTiming",
     "RobustBaseline",
     "TRAINING_POOLED_ALPHA_SCALE",
     "TRAINING_POOLED_EYE_SCALE",
     "ceil_to_one_decimal",
     "classify_lead_time",
+    "compare_first_fatigue_times",
     "compute_fatigue_score",
     "compute_robust_baseline",
     "confirmation_runs",
